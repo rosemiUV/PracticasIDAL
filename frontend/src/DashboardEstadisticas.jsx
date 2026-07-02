@@ -15,6 +15,59 @@ export const MAPA_COLORES = {
   "SIN PARTIDO": "#8E8E93"  // Apple Gray
 };
 
+// Función para formatear el tiempo
+const formatearTiempo = (segundos) => {
+  if (segundos < 60) {
+    return `${segundos.toFixed(1)} segundos`;
+  } else if (segundos < 3600) {
+    const minutos = Math.floor(segundos / 60);
+    const segsRestantes = Math.round(segundos % 60);
+    return `${minutos} min ${segsRestantes} seg`;
+  } else {
+    const horas = Math.floor(segundos / 3600);
+    const minutos = Math.floor((segundos % 3600) / 60);
+    return `${horas} h ${minutos} min`;
+  }
+};
+
+// Tooltip personalizado para la tarta
+const CustomPieTooltip = ({ active, payload }) => {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    return (
+      <div className="bg-[#1C1C1E]/90 backdrop-blur-md p-3 rounded-lg border border-white/10 text-white shadow-xl">
+        <p className="font-semibold text-sm mb-1">{data.name}</p>
+        <p className="text-xs text-white/70">Tiempo: {formatearTiempo(data.value)}</p>
+      </div>
+    );
+  }
+  return null;
+};
+
+const formatName = (name) => {
+  if (!name) return '';
+  if (name === 'DESCONOCIDO') return 'Desconocido';
+  const parts = name.split(' ');
+  if (parts.length > 1) {
+    return `${parts[0].charAt(0)}. ${parts[parts.length - 1]}`;
+  }
+  return name;
+};
+
+// Tooltip personalizado para las barras
+const CustomBarTooltip = ({ active, payload, label }) => {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    return (
+      <div className="bg-[#1C1C1E]/90 backdrop-blur-md p-3 rounded-lg border border-white/10 text-white shadow-xl">
+        <p className="font-semibold text-sm mb-1">{label} <span className="text-xs font-normal text-white/50">({data.partido})</span></p>
+        <p className="text-xs text-[#0A84FF]">{payload[0].name}: {payload[0].value}%</p>
+      </div>
+    );
+  }
+  return null;
+};
+
 export default function DashboardEstadisticas({ data }) {
   const [filtroPartido, setFiltroPartido] = useState('Todos');
 
@@ -74,58 +127,6 @@ export default function DashboardEstadisticas({ data }) {
       color: MAPA_COLORES[item.partido] || '#808080'
     }));
 
-  // Función para formatear el tiempo
-  const formatearTiempo = (segundos) => {
-    if (segundos < 60) {
-      return `${segundos.toFixed(1)} segundos`;
-    } else if (segundos < 3600) {
-      const minutos = Math.floor(segundos / 60);
-      const segsRestantes = Math.round(segundos % 60);
-      return `${minutos} min ${segsRestantes} seg`;
-    } else {
-      const horas = Math.floor(segundos / 3600);
-      const minutos = Math.floor((segundos % 3600) / 60);
-      return `${horas} h ${minutos} min`;
-    }
-  };
-
-  // Tooltip personalizado para la tarta
-  const CustomPieTooltip = ({ active, payload }) => {
-    if (active && payload && payload.length) {
-      const data = payload[0].payload;
-      return (
-        <div className="bg-[#1C1C1E]/90 backdrop-blur-md p-3 rounded-lg border border-white/10 text-white shadow-xl">
-          <p className="font-semibold text-sm mb-1">{data.name}</p>
-          <p className="text-xs text-white/70">Tiempo: {formatearTiempo(data.value)}</p>
-        </div>
-      );
-    }
-    return null;
-  };
-
-  const formatName = (name) => {
-    if (!name) return '';
-    if (name === 'DESCONOCIDO') return 'Desconocido';
-    const parts = name.split(' ');
-    if (parts.length > 1) {
-      return `${parts[0].charAt(0)}. ${parts[parts.length - 1]}`;
-    }
-    return name;
-  };
-
-  // Tooltip personalizado para las barras
-  const CustomBarTooltip = ({ active, payload, label }) => {
-    if (active && payload && payload.length) {
-      const data = payload[0].payload;
-      return (
-        <div className="bg-[#1C1C1E]/90 backdrop-blur-md p-3 rounded-lg border border-white/10 text-white shadow-xl">
-          <p className="font-semibold text-sm mb-1">{label} <span className="text-xs font-normal text-white/50">({data.partido})</span></p>
-          <p className="text-xs text-[#0A84FF]">{payload[0].name}: {payload[0].value}%</p>
-        </div>
-      );
-    }
-    return null;
-  };
 
   return (
     <div className="w-full h-full flex flex-col p-4 md:p-6 space-y-6 overflow-y-auto custom-scrollbar">
