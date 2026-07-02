@@ -15,8 +15,7 @@ load_dotenv()
 # ─────────────────────────────────────────────────────────────
 
 NOMBRE_COLECCION = "plenario"
-import os
-MODO_LOCAL = os.getenv("MODO_LOCAL", "False").lower() == "true"
+MODO_LOCAL = True
 
 ef = embedding_functions.DefaultEmbeddingFunction()
 
