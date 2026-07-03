@@ -30,15 +30,15 @@ const TextoExpandible = ({ text, limit = 150, textClass = "", clampClass = "line
 
   return (
     <div className="flex flex-col w-full pointer-events-auto">
-      <p 
+      <p
         className={`${textClass} ${expanded ? '' : clampClass} transition-all duration-300`}
         title={expanded ? undefined : text}
       >
         "{text}"
       </p>
       {isLong && (
-        <button 
-          onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }} 
+        <button
+          onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
           className="text-[10px] font-bold uppercase tracking-wider text-blue-400 hover:text-blue-500 mt-1.5 self-start transition-colors"
         >
           {expanded ? "Ver menos" : "Leer más"}
@@ -85,18 +85,18 @@ const YouTubeLoopPlayer = ({ url, inicio, fin, isActive }) => {
       } else if (urlObj.hostname === 'youtu.be') {
         vid = urlObj.pathname.slice(1);
       }
-    } catch {}
+    } catch { }
     if (vid) setVideoId(vid);
   }, [url]);
 
   useEffect(() => {
     if (!videoId || !containerRef.current) return;
-    
+
     let isMounted = true;
-    
+
     loadYTApi().then((YT) => {
       if (!isMounted) return;
-      
+
       const startSeconds = Math.floor(inicio || 0);
       const endSeconds = Math.ceil(fin || startSeconds + 60);
 
@@ -139,13 +139,13 @@ const YouTubeLoopPlayer = ({ url, inicio, fin, isActive }) => {
   useEffect(() => {
     if (playerRef.current && typeof playerRef.current.pauseVideo === 'function') {
       if (!isActive) {
-        try { playerRef.current.pauseVideo(); } catch(e){}
+        try { playerRef.current.pauseVideo(); } catch (e) { }
       } else {
-        try { 
+        try {
           const startSeconds = Math.floor(inicio || 0);
           playerRef.current.seekTo(startSeconds);
           playerRef.current.playVideo();
-        } catch(e){}
+        } catch (e) { }
       }
     }
   }, [isActive, inicio]);
@@ -299,7 +299,10 @@ const ResumenVisual = ({ texto, entidadesList, setTooltipGlobal }) => {
 
   // Parseamos las viñetas del índice (líneas que empiezan por - o *)
   const temas = indiceStr.split('\n')
-    .filter(line => line.trim().startsWith('-') || line.trim().startsWith('*'))
+    .filter(line => {
+      const trimmed = line.trim();
+      return (trimmed.startsWith('-') || trimmed.startsWith('*')) && !/^[-*]{2,}$/.test(trimmed);
+    })
     .map(line => {
       let text = line.replace(/^[-*]\s*/, '').trim();
       // Si tiene formato "**Tema**: Descripción", lo separamos
@@ -842,12 +845,12 @@ function App() {
 
             <div className="flex flex-col sm:flex-row gap-3">
               <div className="relative flex-1">
-                <div className="absolute top-4 left-4 flex items-center pointer-events-none">
-                  <Video size={20} className="text-gray-400" />
+                <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center justify-center pointer-events-none">
+                  <Video size={24} className="text-gray-400" />
                 </div>
                 <textarea
-                  className='w-full pl-12 pr-5 py-4 bg-[#f5f5f7] rounded-3xl focus:bg-white focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 border border-transparent outline-none transition-all placeholder:text-gray-400 font-medium resize-none'
-                  placeholder='Pega aquí uno o varios enlaces de YouTube (separados por coma o salto de línea)'
+                  className='w-full px-6 pt-12 pb-4 text-center bg-[#f5f5f7] rounded-3xl focus:bg-white focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 border border-transparent outline-none transition-all placeholder:text-gray-400 font-medium resize-none'
+                  placeholder='Pega aquí uno o varios enlaces de YouTube&#10;(separados por coma o salto de línea)'
                   rows={3}
                   value={urlVideo}
                   onChange={(e) => setUrlVideo(e.target.value)}
@@ -1107,10 +1110,10 @@ function App() {
                               {fuente.nombre || fuente.ponente.split(' (')[0]}
                             </div>
                             {fuente.partido && (
-                              <span 
+                              <span
                                 className="px-2 py-0.5 rounded-md text-[10px] font-bold tracking-wider uppercase border"
-                                style={{ 
-                                  backgroundColor: `${MAPA_COLORES[fuente.partido] || '#8E8E93'}1A`, 
+                                style={{
+                                  backgroundColor: `${MAPA_COLORES[fuente.partido] || '#8E8E93'}1A`,
                                   color: MAPA_COLORES[fuente.partido] || '#8E8E93',
                                   borderColor: `${MAPA_COLORES[fuente.partido] || '#8E8E93'}33`
                                 }}
@@ -1151,9 +1154,9 @@ function App() {
                           data-index={index}
                           className="video-container w-full h-full snap-start snap-always relative flex flex-col items-center justify-center bg-[#1d1d1f]"
                         >
-                          <YouTubeLoopPlayer 
-                            url={fuente.enlace_video} 
-                            inicio={fuente.inicio_segundos} 
+                          <YouTubeLoopPlayer
+                            url={fuente.enlace_video}
+                            inicio={fuente.inicio_segundos}
                             fin={fuente.fin_segundos}
                             isActive={indiceActivo === index}
                           />
@@ -1161,7 +1164,7 @@ function App() {
                             <div className="flex items-center flex-wrap gap-3 mb-1">
                               <p className="font-semibold text-lg tracking-tight">{fuente.nombre || fuente.ponente.split(' (')[0]}</p>
                               {fuente.partido && (
-                                <span 
+                                <span
                                   className="px-2.5 py-0.5 rounded-md text-xs font-bold tracking-wider uppercase text-white backdrop-blur-md border border-white/30 shadow-sm"
                                   style={{ backgroundColor: `${MAPA_COLORES[fuente.partido] || '#8E8E93'}80` }}
                                 >
@@ -1169,11 +1172,11 @@ function App() {
                                 </span>
                               )}
                             </div>
-                            <TextoExpandible 
-                              text={fuente.texto} 
-                              limit={100} 
-                              textClass="text-sm opacity-80 leading-relaxed" 
-                              clampClass="line-clamp-2" 
+                            <TextoExpandible
+                              text={fuente.texto}
+                              limit={100}
+                              textClass="text-sm opacity-80 leading-relaxed"
+                              clampClass="line-clamp-2"
                             />
                           </div>
                         </div>
