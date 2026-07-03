@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import urllib.request
 import urllib.parse
@@ -45,6 +46,12 @@ print(f"Coleccion: '{NOMBRE_COLECCION}' — {collection.count()} fragmentos")
 # Se guarda en un diccionario: { video_id: [lista de mensajes] }
 # ─────────────────────────────────────────────────────────────
 
+# Número máximo de TURNOS (pregunta+respuesta) que se guardan por vídeo.
+# Cada turno son 2 mensajes (user + assistant), así que 3 turnos = 6 mensajes.
+# Esto evita que la conversación crezca sin límite y se vuelva lenta/cara
+# de mandar al LLM cuando alguien hace muchas preguntas seguidas.
+MAX_TURNOS_HISTORIAL = 3
+
 _historial: dict[str, list[dict]] = {}
 
 def obtener_historial(video_id: str) -> list[dict]:
@@ -55,6 +62,15 @@ def limpiar_historial(video_id: str) -> None:
     """Borra el historial de un vídeo (para empezar conversación nueva)."""
     if video_id in _historial:
         del _historial[video_id]
+
+def _recortar_historial(video_id: str) -> None:
+    """
+    Si el historial de un vídeo supera MAX_TURNOS_HISTORIAL turnos,
+    borra los mensajes más antiguos (se queda solo con los últimos).
+    """
+    limite_mensajes = MAX_TURNOS_HISTORIAL * 2
+    if video_id in _historial and len(_historial[video_id]) > limite_mensajes:
+        _historial[video_id] = _historial[video_id][-limite_mensajes:]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -189,6 +205,123 @@ def _llamar_groq(system: str, messages: list[dict]) -> str:
     return respuesta.choices[0].message.content
 
 # ─────────────────────────────────────────────────────────────
+# FILTRO DE RUIDO — fragmentos de presentación de turno (Mesa)
+# ─────────────────────────────────────────────────────────────
+# Frases como "Gracias, señor presidente" o "tiene la palabra el señor..."
+# no aportan contenido real al debate. Este filtro las detecta para que
+# no ocupen sitio en el contexto que le mandamos al LLM en las búsquedas
+# específicas (no se aplica al muestreo global, que ya reparte por tiempo).
+
+MIN_PALABRAS_CHUNK = 8
+
+_PATRONES_RUIDO = [
+    r"^(muchas?\s+)?gracias[,.]?\s+(se[ñn]or[a]?\s+\w+|presidente[a]?)[,.]?\s+(por el grupo|tiene la palabra|turno|el siguiente)",
+    r"^(muchas?\s+)?gracias[,.]?\s*$",
+    r"^(buenas?\s+d[íi]as?|buenas?\s+tardes?)[,.]?\s*(se[ñn]or[íi]as?)?[,.]?\s*$",
+    r"^(en turno de|pasamos (ahora )?al punto|continuamos (ahora )?con)",
+    r"^por el grupo parlamentario .{0,60}tiene la palabra",
+    r"^(muchas?\s+)?gracias[,.]?\s+(se[ñn]or[a]?\s+\w+\.?\s*)?(por el grupo|tiene la palabra|te har[aá] la palabra|har[aá] uso de la palabra)",
+    r"^un momento[,.]?\s*(se[ñn]or[a]?\s+\w+)?[,.]?\s*(por favor[,.]?\s*)?(silencio|espere)",
+    r"^se suspende la sesi[óo]n|^se reanuda la sesi[óo]n|^se levanta la sesi[óo]n",
+]
+_REGEX_RUIDO = [re.compile(p, re.IGNORECASE) for p in _PATRONES_RUIDO]
+
+
+def _es_ruido(texto: str) -> bool:
+    """Detecta si un fragmento es 'relleno' (saludos, cesión de turno...) sin contenido útil."""
+    texto = (texto or "").strip()
+    if len(texto.split()) < MIN_PALABRAS_CHUNK:
+        return True
+    return any(regex.search(texto) for regex in _REGEX_RUIDO)
+
+
+def _filtrar_ruido(documentos: list, metadatos: list) -> tuple[list, list]:
+    """Quita de la lista los fragmentos detectados como ruido."""
+    pares_utiles = [
+        (doc, meta) for doc, meta in zip(documentos, metadatos)
+        if not _es_ruido(doc)
+    ]
+    if not pares_utiles:
+        # Si por lo que sea TODO se marcó como ruido, mejor no perder nada
+        return documentos, metadatos
+    docs_filtrados  = [d for d, _ in pares_utiles]
+    metas_filtrados = [m for _, m in pares_utiles]
+    return docs_filtrados, metas_filtrados
+
+
+# ─────────────────────────────────────────────────────────────
+# DETECTOR DE PREGUNTAS SOBRE VOTACIONES
+# ─────────────────────────────────────────────────────────────
+# Las preguntas sobre votaciones ("¿qué se votó?", "¿cuántos votos a favor?")
+# suelen fallar en la búsqueda semántica normal, porque las frases donde se
+# anuncia un resultado de votación son muy formulaicas y no se parecen mucho,
+# en significado, a la pregunta del usuario. Para compensar, además de la
+# búsqueda semántica normal, forzamos la inclusión de cualquier fragmento del
+# vídeo que contenga un patrón típico de resultado de votación.
+
+_PALABRAS_VOTACION = re.compile(
+    r"\b(votaci[oó]n(es)?|resultado(s)?|votos?|aprobad|rechazad|abstenci[oó]n|"
+    r"qu[eé] se vot[oó]|c[oó]mo vot[oó]|cu[aá]ntos votos|qu[eé] aprob|qu[eé] rechaz)\b",
+    re.IGNORECASE
+)
+
+_PAT_RESULTADO_VOTACION = re.compile(
+    r"(votos? (a favor|emitidos|presentes)\s+\d|"
+    r"\d+\s*(votos?\s*)?(a favor|en contra|abstenciones?)|"
+    r"en consecuencia[,]?\s+(queda|no se aprueba|se aprueba)|"
+    r"votamos (ahora|en primer lugar|el punto n[uú]mero))",
+    re.IGNORECASE
+)
+
+
+def _es_pregunta_votacion(pregunta: str) -> bool:
+    """Detecta si la pregunta trata sobre el resultado de una votación."""
+    return bool(_PALABRAS_VOTACION.search(pregunta))
+
+
+def _chunks_con_resultados_votacion(video_id: str) -> tuple[list, list]:
+    """
+    Recorre TODOS los fragmentos del vídeo (no solo el top_k semántico) y
+    devuelve aquellos cuyo texto contiene un resultado de votación explícito
+    (ej. '180 votos a favor', 'en consecuencia, queda aprobado').
+    """
+    resultados = collection.get(
+        where={"video_id": {"$eq": video_id}},
+        include=["documents", "metadatas"]
+    )
+    documentos = resultados.get("documents", [])
+    metadatos  = resultados.get("metadatas", [])
+
+    pares_forzados = [
+        (doc, meta) for doc, meta in zip(documentos, metadatos)
+        if _PAT_RESULTADO_VOTACION.search(doc or "")
+    ]
+    docs_forzados  = [d for d, _ in pares_forzados]
+    metas_forzados = [m for _, m in pares_forzados]
+    return docs_forzados, metas_forzados
+
+
+def _combinar_sin_duplicados(
+    documentos_a: list, metadatos_a: list,
+    documentos_b: list, metadatos_b: list
+) -> tuple[list, list]:
+    """
+    Junta dos listas de fragmentos (documentos_a primero, luego documentos_b)
+    sin repetir el mismo fragmento dos veces. Se identifica cada fragmento
+    por su texto + tiempo de inicio.
+    """
+    vistos = set()
+    docs_combinados, metas_combinados = [], []
+    for doc, meta in list(zip(documentos_a, metadatos_a)) + list(zip(documentos_b, metadatos_b)):
+        clave = (doc, meta.get("inicio"))
+        if clave not in vistos:
+            vistos.add(clave)
+            docs_combinados.append(doc)
+            metas_combinados.append(meta)
+    return docs_combinados, metas_combinados
+
+
+# ─────────────────────────────────────────────────────────────
 # DETECTOR DE PREGUNTAS GLOBALES (sobre TODO el vídeo)
 # ─────────────────────────────────────────────────────────────
 
@@ -227,12 +360,15 @@ def _es_pregunta_global(pregunta: str) -> bool:
 def buscar(pregunta: str, video_id: str, top_k: int = 5) -> dict:
     """
     Busca fragmentos relevantes y responde usando Mistral en la nube.
-    Recuerda las preguntas anteriores del mismo vídeo (memoria de conversación).
+    Recuerda las preguntas anteriores del mismo vídeo (memoria de conversación,
+    limitada a los últimos MAX_TURNOS_HISTORIAL turnos).
 
-    Detecta automáticamente si la pregunta es GLOBAL (sobre todo el vídeo, ej.
-    "resúmeme", "de qué trata") o ESPECÍFICA (sobre un tema concreto). Para las
-    globales usa una muestra repartida por todo el vídeo en vez de búsqueda semántica,
-    porque una pregunta como "resúmeme" no encuentra buenos matches por similitud.
+    Detecta automáticamente el tipo de pregunta:
+      - GLOBAL (ej. "resúmeme", "de qué trata") → muestra repartida por todo el vídeo.
+      - SOBRE VOTACIONES (ej. "¿qué se votó?") → búsqueda semántica + fragmentos
+        con resultados de votación forzados, para no perderlos.
+      - ESPECÍFICA (cualquier otra) → búsqueda semántica normal, filtrando fragmentos
+        de "relleno" (saludos, cesión de turno...) que no aportan contenido.
 
     Parámetros:
       - pregunta  → lo que escribe el usuario en Streamlit
@@ -247,22 +383,51 @@ def buscar(pregunta: str, video_id: str, top_k: int = 5) -> dict:
     """
 
     # 1. Elegir estrategia de recuperación según el tipo de pregunta
-    es_global = _es_pregunta_global(pregunta)
+    es_global    = _es_pregunta_global(pregunta)
+    es_votacion  = (not es_global) and _es_pregunta_votacion(pregunta)
 
     if es_global:
         # Pregunta sobre TODO el vídeo (ej. "resúmeme", "de qué trata"):
         # usamos una muestra repartida por todo el vídeo, no búsqueda semántica.
         documentos, metadatos = _muestrear_video_completo(video_id, n_fragmentos=40)
-    else:
-        # Pregunta específica: búsqueda semántica normal en ChromaDB
+
+    elif es_votacion:
+        # Pregunta sobre votaciones: combinamos búsqueda semántica normal
+        # con los fragmentos que contienen resultados de votación explícitos,
+        # que si no se podrían perder porque no se parecen semánticamente
+        # a la pregunta ("¿qué se votó?" vs "180 votos a favor...").
         resultados = collection.query(
             query_texts=[pregunta],
             n_results=top_k,
             where={"video_id": {"$eq": video_id}},
             include=["documents", "metadatas"]
         )
+        docs_semanticos  = resultados["documents"][0]
+        metas_semanticos = resultados["metadatas"][0]
+
+        docs_forzados, metas_forzados = _chunks_con_resultados_votacion(video_id)
+
+        documentos, metadatos = _combinar_sin_duplicados(
+            docs_forzados, metas_forzados,
+            docs_semanticos, metas_semanticos
+        )
+
+    else:
+        # Pregunta específica: búsqueda semántica normal en ChromaDB.
+        # Pedimos algo más de top_k para poder filtrar ruido y aun así
+        # quedarnos con top_k fragmentos útiles.
+        resultados = collection.query(
+            query_texts=[pregunta],
+            n_results=top_k * 2,
+            where={"video_id": {"$eq": video_id}},
+            include=["documents", "metadatas"]
+        )
         documentos = resultados["documents"][0]
         metadatos  = resultados["metadatas"][0]
+
+        documentos, metadatos = _filtrar_ruido(documentos, metadatos)
+        documentos = documentos[:top_k]
+        metadatos  = metadatos[:top_k]
 
     if not documentos:
         return {
@@ -287,6 +452,14 @@ def buscar(pregunta: str, video_id: str, top_k: int = 5) -> dict:
             f"existen, pero sí una muestra fiel de todo el contenido. Responde con una visión "
             f"general basada en esta muestra; no te niegues a responder solo porque no sean "
             f"literalmente todos los fragmentos del vídeo.\n\n"
+            f"Fragmentos:\n{contexto}"
+        )
+    elif es_votacion:
+        mensaje_usuario = (
+            f"Pregunta del usuario: {pregunta}\n\n"
+            f"A continuación tienes fragmentos relevantes del vídeo, incluyendo aquellos "
+            f"donde se anuncian resultados de votaciones (número de votos, si se aprueba "
+            f"o rechaza, etc.). Usa esos datos exactos si responden a la pregunta.\n\n"
             f"Fragmentos:\n{contexto}"
         )
     else:
@@ -314,17 +487,24 @@ def buscar(pregunta: str, video_id: str, top_k: int = 5) -> dict:
         "(su nombre real, o un código como 'SPEAKER_04' cuando el sistema no pudo reconocer su "
         "identidad). Copia siempre esa identificación tal cual aparece, letra por letra, al citarla "
         "en tu respuesta.\n"
+        "- ATRIBUCIÓN ESTRICTA: solo atribuye una afirmación o postura al partido o persona que "
+        "la dijo literalmente en su propio fragmento. No infieras ni des por hecho que un partido "
+        "'apoya' o 'está de acuerdo con' algo solo porque otro ponente lo mencionó o lo dijo de él.\n"
+        "- SÉ CONCISO: responde de forma directa, sin relleno ni repetir la pregunta. Para preguntas "
+        "simples, 2-4 párrafos suelen bastar; reserva las respuestas más largas y estructuradas para "
+        "preguntas con varios aspectos o posturas distintas.\n"
         "- Puedes usar el historial de la conversación para dar respuestas de seguimiento coherentes."
     )
 
     # 6. Llamar a Mistral
     respuesta_llm = _llamar_mistral(system, mensajes)
 
-    # 7. Guardar en historial (pregunta + respuesta)
+    # 7. Guardar en historial (pregunta + respuesta) y recortarlo si hace falta
     if video_id not in _historial:
         _historial[video_id] = []
     _historial[video_id].append({"role": "user",      "content": mensaje_usuario})
     _historial[video_id].append({"role": "assistant", "content": respuesta_llm})
+    _recortar_historial(video_id)
 
     # 8. Construir fuentes
     fuentes_top_k = []
