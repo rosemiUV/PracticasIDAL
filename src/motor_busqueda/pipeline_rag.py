@@ -337,6 +337,26 @@ _PALABRAS_CLAVE_GLOBALES = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────
+# DETECTOR DE PREGUNTAS SOBRE UN PONENTE CONCRETO
+# ─────────────────────────────────────────────────────────────
+# Cuando alguien pregunta por un ponente o partido concreto
+# ("¿qué dijo Feijóo?", "postura del PP"), con pocos fragmentos
+# basta y son más precisos. Con más fragmentos se mezcla ruido.
+
+_PATRONES_PONENTE = re.compile(
+    r"(qu[eé] dijo|qu[eé] argument[oó]|postura (de|del)|"
+    r"intervenci[oó]n de|seg[uú]n|c[oó]mo vot[oó]|"
+    r"qu[eé] pens[oó]|qu[eé] propuso|qu[eé] defendi[oó])",
+    re.IGNORECASE
+)
+
+
+def _es_pregunta_ponente(pregunta: str) -> bool:
+    """Detecta si la pregunta va sobre la intervención de un ponente o partido concreto."""
+    return bool(_PATRONES_PONENTE.search(pregunta))
+
+
 def _es_pregunta_global(pregunta: str) -> bool:
     """
     Detecta si la pregunta es sobre TODO el vídeo en general (ej. "resúmeme el vídeo",
@@ -357,23 +377,26 @@ def _es_pregunta_global(pregunta: str) -> bool:
 # FUNCIÓN 1: BÚSQUEDA CON MEMORIA
 # ─────────────────────────────────────────────────────────────
 
-def buscar(pregunta: str, video_id: str, top_k: int = 5) -> dict:
+# Top_k por tipo de pregunta:
+#   - Ponente concreto → 5: fragmentos consecutivos del mismo speaker, muy precisos
+#   - Temática amplia  → 15: más cobertura para preguntas con varios aspectos
+#   - Votaciones       → 5 semánticos + todos los de resultado forzados
+#   - Global           → muestreo distribuido (ignora top_k)
+TOP_K_PONENTE  = 5
+TOP_K_TEMATICA = 15
+
+
+def buscar(pregunta: str, video_id: str) -> dict:
     """
     Busca fragmentos relevantes y responde usando Mistral en la nube.
     Recuerda las preguntas anteriores del mismo vídeo (memoria de conversación,
     limitada a los últimos MAX_TURNOS_HISTORIAL turnos).
 
-    Detecta automáticamente el tipo de pregunta:
+    Detecta automáticamente el tipo de pregunta y ajusta la estrategia:
       - GLOBAL (ej. "resúmeme", "de qué trata") → muestra repartida por todo el vídeo.
-      - SOBRE VOTACIONES (ej. "¿qué se votó?") → búsqueda semántica + fragmentos
-        con resultados de votación forzados, para no perderlos.
-      - ESPECÍFICA (cualquier otra) → búsqueda semántica normal, filtrando fragmentos
-        de "relleno" (saludos, cesión de turno...) que no aportan contenido.
-
-    Parámetros:
-      - pregunta  → lo que escribe el usuario en Streamlit
-      - video_id  → viene de los metadatos del JSON de entrada
-      - top_k     → número de fragmentos a recuperar en preguntas específicas (entre 5 y 10)
+      - VOTACIONES (ej. "¿qué se votó?") → semántica + resultados de votación forzados.
+      - PONENTE CONCRETO (ej. "¿qué dijo Feijóo?") → top_k=5, fragmentos precisos.
+      - TEMÁTICA AMPLIA (cualquier otra) → top_k=15, más cobertura.
 
     Devuelve un diccionario con:
       - pregunta       → lo que preguntó el usuario
@@ -382,9 +405,12 @@ def buscar(pregunta: str, video_id: str, top_k: int = 5) -> dict:
       - fuentes_top_k  → lista de fragmentos usados (ponente, texto, enlace, tiempos)
     """
 
-    # 1. Elegir estrategia de recuperación según el tipo de pregunta
-    es_global    = _es_pregunta_global(pregunta)
-    es_votacion  = (not es_global) and _es_pregunta_votacion(pregunta)
+    # 1. Clasificar la pregunta y elegir estrategia + top_k
+    es_global   = _es_pregunta_global(pregunta)
+    es_votacion = (not es_global) and _es_pregunta_votacion(pregunta)
+    es_ponente  = (not es_global) and (not es_votacion) and _es_pregunta_ponente(pregunta)
+
+    top_k = TOP_K_PONENTE if es_ponente else TOP_K_TEMATICA
 
     if es_global:
         # Pregunta sobre TODO el vídeo (ej. "resúmeme", "de qué trata"):
