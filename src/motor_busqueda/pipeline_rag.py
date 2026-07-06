@@ -994,3 +994,208 @@ def obtener_intervencion_completa(video_id: str, ponente: str, inicio: float, fi
             "contexto_completo": [],
             "error":             str(e)
         }
+
+
+# ─────────────────────────────────────────────────────────────
+# FUNCIÓN 5: BÚSQUEDA TRANSVERSAL (varios vídeos a la vez)
+# ─────────────────────────────────────────────────────────────
+# A diferencia de buscar(), esta función NO filtra por video_id: compara
+# la pregunta contra los fragmentos de TODOS los plenos cargados en la
+# base de datos. Pensada para preguntas tipo "¿qué ha dicho el PSOE sobre
+# la vivienda en los últimos plenos?", donde el usuario no elige un vídeo
+# concreto sino que quiere ver todo lo relacionado, venga de donde venga.
+
+# Más alto que TOP_K_TEMATICA porque aquí compite contenido de MUCHOS
+# vídeos distintos a la vez, así que hacen falta más fragmentos para
+# tener una imagen representativa.
+TOP_K_TRANSVERSAL = 30
+
+# Lista de partidos conocidos para detectar automáticamente si la pregunta
+# menciona a alguno (así no hace falta que el frontend lo indique siempre
+# a mano). Si tu base de datos usa otros nombres de partido en el campo
+# "partido", añádelos aquí para que la detección automática funcione.
+_PARTIDOS_CONOCIDOS = [
+    "PSOE", "PP", "VOX", "Sumar", "ERC", "Junts", "EH Bildu", "Bildu",
+    "PNV", "BNG", "CC", "UPN", "Podemos", "Ciudadanos", "Cs"
+]
+
+
+def _detectar_partido_en_pregunta(pregunta: str) -> str | None:
+    """
+    Busca si la pregunta menciona explícitamente el nombre de un partido
+    conocido (ej. "PSOE", "Junts"). Si lo encuentra, devuelve el nombre
+    tal cual está escrito en _PARTIDOS_CONOCIDOS, para usarlo como filtro
+    de metadatos ("partido") en ChromaDB.
+
+    Si no se detecta ninguno, devuelve None (no se filtra por partido y
+    se busca entre todos los ponentes).
+    """
+    texto = pregunta.lower()
+    for partido in _PARTIDOS_CONOCIDOS:
+        if partido.lower() in texto:
+            return partido
+    return None
+
+
+def _construir_contexto_transversal(documentos: list, metadatos: list) -> str:
+    """
+    Igual que _construir_contexto(), pero como aquí los fragmentos pueden
+    venir de vídeos (plenos) distintos, cada línea añade también el título
+    y la fecha del vídeo de origen entre corchetes, para que el LLM pueda
+    distinguir de qué sesión habla cada fragmento y no las mezcle.
+    """
+    lineas = []
+    for doc, meta in zip(documentos, metadatos):
+        t_inicio = _segundos_a_mmss(meta["inicio"])
+        t_fin    = _segundos_a_mmss(meta["fin"])
+        nombre   = _nombre_mostrar(meta)
+        titulo   = meta.get("titulo_video") or meta.get("video_id", "Vídeo desconocido")
+        fecha    = meta.get("fecha_publicacion")
+        cabecera = f"[{titulo} — {fecha}]" if fecha else f"[{titulo}]"
+        lineas.append(f"{cabecera} {nombre} ({t_inicio} - {t_fin}): [{doc}]")
+    return "\n".join(lineas)
+
+
+def buscar_transversal(pregunta: str, partido: str = None, top_k: int = TOP_K_TRANSVERSAL) -> dict:
+    """
+    Como buscar(), pero busca en TODOS los vídeos de la colección a la vez,
+    en lugar de limitarse a un único video_id. Pensada para preguntas tipo
+    "¿qué ha dicho el PSOE sobre la vivienda en los últimos plenos?".
+
+    Parámetros:
+      - pregunta → pregunta del usuario.
+      - partido  → si se indica (ej. "PSOE"), filtra los fragmentos para
+                   que solo se busque entre intervenciones de ese partido.
+                   Si se deja en None, se intenta detectar automáticamente
+                   a partir del texto de la pregunta (ver
+                   _detectar_partido_en_pregunta); si tampoco se detecta
+                   nada, se busca entre TODOS los partidos.
+      - top_k    → número de fragmentos a recuperar. Por defecto más alto
+                   que en buscar() (TOP_K_TRANSVERSAL = 30), porque aquí
+                   se compite con contenido de muchos vídeos distintos.
+
+    La memoria de conversación de estas búsquedas se guarda POR SEPARADO
+    de la de buscar() (que es por video_id), en un "hilo" propio según el
+    filtro de partido usado. Así, si el usuario alterna entre preguntar
+    sobre un vídeo concreto y hacer una búsqueda transversal, las dos
+    conversaciones no se mezclan.
+
+    Devuelve el mismo formato que buscar(), con dos añadidos en cada
+    elemento de "fuentes_top_k": "video_id" y "titulo_video", ya que aquí
+    los fragmentos pueden venir de vídeos distintos y conviene saber de
+    cuál viene cada uno.
+    """
+
+    # 1. Si no nos dan un partido explícito, intentamos detectarlo en la pregunta
+    if partido is None:
+        partido = _detectar_partido_en_pregunta(pregunta)
+
+    # 2. Filtro de metadatos: SIN video_id (así busca en toda la colección),
+    #    opcionalmente con partido si se detectó o se indicó uno
+    where = {"partido": {"$eq": partido}} if partido else None
+
+    # 3. Búsqueda semántica en toda la colección.
+    #    Pedimos el doble de top_k para poder filtrar ruido y aun así
+    #    quedarnos con top_k fragmentos útiles.
+    resultados = collection.query(
+        query_texts=[pregunta],
+        n_results=top_k * 2,
+        where=where,
+        include=["documents", "metadatas"]
+    )
+    documentos = resultados["documents"][0]
+    metadatos  = resultados["metadatas"][0]
+
+    documentos, metadatos = _filtrar_ruido(documentos, metadatos)
+    documentos = documentos[:top_k]
+    metadatos  = metadatos[:top_k]
+
+    if not documentos:
+        filtro_txt = f" del partido '{partido}'" if partido else ""
+        return {
+            "pregunta":      pregunta,
+            "prompt":        "",
+            "respuesta_llm": f"No se encontraron fragmentos relevantes{filtro_txt} en ningún vídeo.",
+            "fuentes_top_k": []
+        }
+
+    # 4. Construir contexto (con título/fecha de vídeo, al venir de varias sesiones)
+    contexto = _construir_contexto_transversal(documentos, metadatos)
+
+    # 5. Historial propio de las búsquedas transversales, separado por partido
+    clave_historial = f"__transversal__{partido or 'todos'}"
+    historial_previo = obtener_historial(clave_historial)
+
+    mensaje_usuario = (
+        f"Pregunta del usuario: {pregunta}\n\n"
+        f"A continuación tienes fragmentos relevantes recogidos de VARIOS PLENOS "
+        f"distintos (cada fragmento indica entre corchetes de qué sesión y fecha "
+        f"proviene). Ten en cuenta que pueden ser sesiones de fechas diferentes: "
+        f"si es relevante para la pregunta, organiza la respuesta por sesión o "
+        f"señala si la postura cambió con el tiempo.\n\n"
+        f"Fragmentos:\n{contexto}"
+    )
+
+    mensajes = historial_previo + [{"role": "user", "content": mensaje_usuario}]
+
+    system = (
+        "Eres un asistente especializado en sesiones parlamentarias españolas. "
+        "Responde ÚNICAMENTE con información que esté en los fragmentos proporcionados; "
+        "si la respuesta no está en los fragmentos, dilo claramente en vez de inventarla. "
+        "Los fragmentos proceden de VARIOS PLENOS distintos, cada uno identificado por su "
+        "título y fecha entre corchetes al principio de la línea:\n"
+        "- Cuando cites algo, indica también de qué sesión o fecha proviene, no solo quién lo dijo.\n"
+        "- Si el mismo tema aparece en varias sesiones, señala si la postura se mantiene igual "
+        "o ha cambiado con el tiempo.\n"
+        "- CITA siempre por nombre y, si se conoce, por partido o grupo parlamentario "
+        "(ej. 'Pérez Masó (Junts) defendió que...'), en vez de decir simplemente 'un diputado dijo...'.\n"
+        "- ATRIBUCIÓN ESTRICTA: solo atribuye una afirmación o postura al partido o persona que "
+        "la dijo literalmente en su propio fragmento. No infieras ni des por hecho que un partido "
+        "'apoya' o 'está de acuerdo con' algo solo porque otro ponente lo mencionó.\n"
+        "- SÉ CONCISO pero completo: estructura la respuesta por sesión o por postura cuando "
+        "haya varios aspectos distintos, en vez de un único párrafo genérico.\n"
+        "- Puedes usar el historial de la conversación para dar respuestas de seguimiento coherentes."
+    )
+
+    # 6. Llamar a Mistral
+    respuesta_llm = _llamar_mistral(system, mensajes)
+
+    # 7. Guardar en el historial propio de la búsqueda transversal
+    if clave_historial not in _historial:
+        _historial[clave_historial] = []
+    _historial[clave_historial].append({"role": "user",      "content": mensaje_usuario})
+    _historial[clave_historial].append({"role": "assistant", "content": respuesta_llm})
+    _recortar_historial(clave_historial)
+
+    # 8. Construir fuentes, añadiendo de qué vídeo viene cada una
+    fuentes_top_k = []
+    for doc, meta in zip(documentos, metadatos):
+        fuente = {**meta}
+        fuente["ponente"] = _nombre_mostrar(meta)
+        fuente["texto"] = doc
+        fuente["enlace_video"] = meta.get("url_exacta_tiempo", "")
+        fuente["inicio_str"] = _segundos_a_mmss(meta["inicio"])
+        fuente["fin_str"] = _segundos_a_mmss(meta["fin"])
+        fuente["inicio_segundos"] = meta["inicio"]
+        fuente["fin_segundos"] = meta["fin"]
+        fuente["inicio"] = _segundos_a_mmss(meta["inicio"])
+        fuente["fin"] = _segundos_a_mmss(meta["fin"])
+        fuente["video_id"] = meta.get("video_id", "")
+        fuente["titulo_video"] = meta.get("titulo_video", "")
+        fuentes_top_k.append(fuente)
+
+    return {
+        "pregunta":      pregunta,
+        "prompt":        mensaje_usuario,
+        "respuesta_llm": respuesta_llm,
+        "fuentes_top_k": fuentes_top_k
+    }
+
+
+def limpiar_historial_transversal(partido: str = None) -> None:
+    """
+    Borra el historial de una conversación transversal concreta
+    (la del partido indicado, o la general si no se indica ninguno).
+    Útil para "empezar de cero" una búsqueda transversal en el frontend.
+    """
+    limpiar_historial(f"__transversal__{partido or 'todos'}")
