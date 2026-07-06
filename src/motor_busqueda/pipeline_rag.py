@@ -1015,8 +1015,8 @@ TOP_K_TRANSVERSAL = 30
 # a mano). Si tu base de datos usa otros nombres de partido en el campo
 # "partido", añádelos aquí para que la detección automática funcione.
 _PARTIDOS_CONOCIDOS = [
-    "PSOE", "PP", "VOX", "Sumar", "ERC", "Junts", "EH Bildu", "Bildu",
-    "PNV", "BNG", "CC", "UPN", "Podemos", "Ciudadanos", "Cs"
+    "PSOE", "PP", "Vox", "Sumar", "ERC", "Junts", "EH Bildu", "Bildu",
+    "PNV", "BNG", "CC", "UPN", "Podemos", "Ciudadanos", "Cs", "Mesa"
 ]
 
 
