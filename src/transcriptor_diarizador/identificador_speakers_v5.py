@@ -1973,17 +1973,17 @@ def guardar_json(chunks: list, ruta: Path):
 
 PATRONES_PRESENTACION = [
     # Presentaciones directas con nombre
-    (r"tiene la palabra (?:el|la) se[ñn]or[a]?\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+){0,3})", 0.95),
-    (r"tiene la palabra.*?(?:el|la) se[ñn]or[a]?\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+){0,3})", 0.95),
+    (r"tiene.*?la palabra (?:el|la) se[ñn]or[a]?\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+){0,3})", 0.95),
+    (r"tiene.*?la palabra.*?(?:el|la) se[ñn]or[a]?\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+){0,3})", 0.95),
     (r"interviene (?:el|la) se[ñn]or[a]?\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+){0,3})", 0.95),
     (r"para (?:su defensa|la defensa de la iniciativa).*?(?:el|la) se[ñn]or[a]?\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+){0,3})", 0.95),
     (r"(?:el|la) portavoz del grupo.*?(?:el|la) se[ñn]or[a]?\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+){0,3})", 0.95),
     (r"por el grupo parlamentario.*?(?:el|la) se[ñn]or[a]?\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+){0,3})", 0.95),
-    (r"tiene la palabra (?:el candidato|la candidata).*?(?:se[ñn]or[a]?\s+)?([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+){0,3})", 0.95),
+    (r"tiene.*?la palabra (?:el candidato|la candidata).*?(?:se[ñn]or[a]?\s+)?([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+){0,3})", 0.95),
     # CAMBIO 1: cargos institucionales SOLO dentro de presentación explícita
-    (r"tiene la palabra el presidente del gobierno", 0.95),   # → CARGOS_FIJOS
-    (r"tiene la palabra la presidenta del congreso", 0.95),
-    (r"tiene la palabra el presidente del senado", 0.95),
+    (r"tiene.*?la palabra el presidente del gobierno", 0.95),   # → CARGOS_FIJOS
+    (r"tiene.*?la palabra la presidenta del congreso", 0.95),
+    (r"tiene.*?la palabra el presidente del senado", 0.95),
 ]
 
 # Regex auxiliar para extraer el cargo de los patrones de presentación con cargo
@@ -2029,8 +2029,9 @@ def detectar_patrones_heuristicos(chunks: list, idx: int) -> dict:
     if idx > 0:
         textos.append(chunks[idx - 1]["texto"])
     textos.append(chunks[idx]["texto"])
-    if idx < len(chunks) - 1:
-        textos.append(chunks[idx + 1]["texto"])
+    # NOTA: No incluimos chunks[idx + 1] porque si el siguiente chunk es la Mesa 
+    # dando la palabra a un TERCER ponente, este ponente actual heredaría 
+    # erróneamente ese nombre de presentación.
     ventana = " ".join(textos)
 
     # FIX 1: presidencia de mesa (solo texto actual)
@@ -2495,23 +2496,23 @@ def fusionar_fingerprints_por_nombre(chunks: list, fingerprints: dict) -> int:
 
     actualizados = 0
     for nombre, speakers in nombre_a_speakers.items():
-        if len(speakers) < 2:
-            continue
         partido_canonico = next(
             (fingerprints[sp].get("partido") for sp in speakers
              if fingerprints[sp].get("partido")),
             None,
         )
         confianza_canonica = max(fingerprints[sp]["confianza"] for sp in speakers)
+        
         for sp in speakers:
             for chunk in chunks:
                 if chunk["ponente"] == sp and chunk["estado_id"] in ("DESCONOCIDO", "AMBIGUO"):
+                    metodo = "fingerprint_fusion" if len(speakers) > 1 else "fingerprint_retroactivo"
                     chunk.update({
                         "nombre": nombre,
                         "partido": partido_canonico,
                         "estado_id": "IDENTIFICADO",
                         "confianza_id": confianza_canonica,
-                        "metodo_id": "fingerprint_fusion",
+                        "metodo_id": metodo,
                     })
                     actualizados += 1
     return actualizados
