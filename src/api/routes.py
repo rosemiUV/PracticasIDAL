@@ -58,15 +58,30 @@ def perform_search(request: SearchRequest):
     """
     Recibe la pregunta del usuario y busca en ChromaDB y llama a Llama-3.
     """
-    from src.motor_busqueda.pipeline_rag import buscar
+    from src.motor_busqueda.pipeline_rag import buscar, buscar_transversal
     
     try:
-        # Realizamos la búsqueda en ChromaDB y llamamos a Llama-3 local con memoria
-        resultados = buscar(pregunta=request.pregunta, video_id=request.id_sesion)
+        if request.is_global:
+            resultados = buscar_transversal(pregunta=request.pregunta)
+        else:
+            # Realizamos la búsqueda en ChromaDB y llamamos a Llama-3 local con memoria
+            if not request.id_sesion:
+                raise HTTPException(status_code=400, detail="id_sesion requerido para búsqueda no global")
+            resultados = buscar(pregunta=request.pregunta, video_id=request.id_sesion)
         return resultados
     except Exception as e:
         print(f"Error en la búsqueda RAG: {e}")
         raise HTTPException(status_code=500, detail="Error realizando la búsqueda.")
+
+@router.post('/clear_transversal_history')
+def clear_transversal_history():
+    from src.motor_busqueda.pipeline_rag import limpiar_historial_transversal
+    try:
+        limpiar_historial_transversal()
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"Error limpiando historial: {e}")
+        raise HTTPException(status_code=500, detail="Error limpiando historial.")
 
 
 @router.post('/context')

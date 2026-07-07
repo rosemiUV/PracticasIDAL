@@ -8,7 +8,8 @@ from typing import List, Optional
 #1. Lo que recibimos del Frontend (Input)
 class SearchRequest(BaseModel):
     pregunta: str
-    id_sesion: str
+    id_sesion: Optional[str] = None
+    is_global: bool = False
 
 class Fuente(BaseModel):
     ponente: str

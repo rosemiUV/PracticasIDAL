@@ -930,11 +930,13 @@ def obtener_intervencion_completa(video_id: str, ponente: str, inicio: float, fi
     MARGEN_SEGUNDOS = 60
 
     try:
+        # Buscamos por video_id y franja de tiempo sin filtrar por 'ponente' aquí,
+        # porque el 'ponente' recibido viene con el formato de la UI (ej. "Nombre (Partido)")
+        # y Chroma guarda el ponente como "SPEAKER_00" o similar en su campo 'ponente'.
         resultados = collection.get(
             where={
                 "$and": [
                     {"video_id": {"$eq": video_id}},
-                    {"ponente":  {"$eq": ponente}},
                     {"inicio":   {"$gte": max(0.0, inicio - MARGEN_SEGUNDOS)}},
                     {"fin":      {"$lte": fin + MARGEN_SEGUNDOS}}
                 ]
@@ -945,7 +947,13 @@ def obtener_intervencion_completa(video_id: str, ponente: str, inicio: float, fi
         documentos = resultados.get("documents", [])
         metadatos  = resultados.get("metadatas", [])
 
-        if not documentos:
+        # Filtramos en memoria por el nombre formateado
+        pares_filtrados = []
+        for doc, meta in zip(documentos, metadatos):
+            if _nombre_mostrar(meta) == ponente:
+                pares_filtrados.append((meta, doc))
+
+        if not pares_filtrados:
             return {
                 "ponente":           ponente,
                 "inicio_mmss":       _segundos_a_mmss(inicio),
@@ -955,10 +963,9 @@ def obtener_intervencion_completa(video_id: str, ponente: str, inicio: float, fi
                 "error":             "No se encontraron fragmentos para esa intervención."
             }
 
-        pares = sorted(zip(metadatos, documentos), key=lambda x: x[0].get("inicio", 0))
+        pares = sorted(pares_filtrados, key=lambda x: x[0].get("inicio", 0))
 
-        # Usamos el nombre real (si se conoce) del primer fragmento encontrado,
-        # en vez de mostrar el identificador técnico SPEAKER_XX que se usó para filtrar.
+        # Usamos el nombre real (si se conoce) del primer fragmento encontrado
         nombre_real = _nombre_mostrar(pares[0][0])
 
         texto_exacto = ""
