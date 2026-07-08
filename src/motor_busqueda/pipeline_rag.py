@@ -105,6 +105,49 @@ def _nombre_mostrar(meta: dict) -> str:
     return nombre
 
 
+def _fusionar_chunks_contiguos(documentos: list, metadatos: list) -> tuple[list, list]:
+    """
+    Une fragmentos adyacentes del mismo ponente para darle al LLM
+    párrafos más largos y continuos, evitando la fragmentación del contexto.
+    """
+    if not documentos:
+        return [], []
+
+    # Es vital ordenar los fragmentos por tiempo de inicio antes de fusionarlos
+    pares = sorted(zip(metadatos, documentos), key=lambda x: x[0].get("inicio", 0))
+    
+    docs_fusionados = []
+    metas_fusionados = []
+    
+    meta_actual = dict(pares[0][0])
+    doc_actual = pares[0][1]
+    
+    # Tolerancia en segundos para considerar que dos chunks están pegados
+    TOLERANCIA_SEGUNDOS = 5.0 
+    
+    for meta_sig, doc_sig in pares[1:]:
+        mismo_ponente = meta_actual.get("ponente") == meta_sig.get("ponente")
+        
+        # Consideramos si el vídeo origen es el mismo (importante para transversal)
+        mismo_video = meta_actual.get("video_id") == meta_sig.get("video_id")
+        
+        tiempo_cercano = meta_sig.get("inicio", 0) - meta_actual.get("fin", 0) <= TOLERANCIA_SEGUNDOS
+        
+        if mismo_ponente and mismo_video and tiempo_cercano:
+            doc_actual += " " + doc_sig
+            meta_actual["fin"] = max(meta_actual["fin"], meta_sig["fin"])
+        else:
+            docs_fusionados.append(doc_actual)
+            metas_fusionados.append(meta_actual)
+            meta_actual = dict(meta_sig)
+            doc_actual = doc_sig
+            
+    docs_fusionados.append(doc_actual)
+    metas_fusionados.append(meta_actual)
+    
+    return docs_fusionados, metas_fusionados
+
+
 def _construir_contexto(documentos: list, metadatos: list) -> str:
     """
     Construye el bloque de contexto que se mete al LLM.
@@ -119,7 +162,7 @@ def _construir_contexto(documentos: list, metadatos: list) -> str:
     return "\n".join(lineas)
 
 
-def _muestrear_video_completo(video_id: str, n_fragmentos: int = 40) -> tuple[list, list]:
+def _muestrear_video_completo(video_id: str, n_fragmentos: int = 40, excluir_mesa: bool = True) -> tuple[list, list]:
     """
     Coge fragmentos REPARTIDOS por todo el vídeo (principio, medio y final),
     en vez de solo los primeros n_fragmentos por tiempo.
@@ -129,8 +172,18 @@ def _muestrear_video_completo(video_id: str, n_fragmentos: int = 40) -> tuple[li
 
     Devuelve (documentos, metadatos) ya ordenados por tiempo.
     """
+    if excluir_mesa:
+        where_filtro = {
+            "$and": [
+                {"video_id": {"$eq": video_id}},
+                {"partido": {"$ne": "Mesa"}}
+            ]
+        }
+    else:
+        where_filtro = {"video_id": {"$eq": video_id}}
+
     resultados = collection.get(
-        where={"video_id": {"$eq": video_id}},
+        where=where_filtro,
         include=["documents", "metadatas"]
     )
 
@@ -373,6 +426,36 @@ def _es_pregunta_global(pregunta: str) -> bool:
     return any(palabra in texto for palabra in _PALABRAS_CLAVE_GLOBALES)
 
 
+def _detectar_ponentes_en_pregunta(pregunta: str, video_id: str) -> list[str]:
+    """
+    Busca los ponentes del vídeo en la base de datos y comprueba si 
+    alguna palabra de su nombre (de longitud > 3) aparece en la pregunta.
+    """
+    res = collection.get(where={"video_id": {"$eq": video_id}}, include=["metadatas"])
+    todos_ponentes = {m.get("ponente") for m in res.get("metadatas", []) if m.get("ponente")}
+    
+    ponentes_scores = {}
+    palabras_pregunta = set(re.findall(r'\b\w+\b', pregunta.lower()))
+    for ponente in todos_ponentes:
+        if ponente.startswith("SPEAKER_"):
+            continue
+        nombre_limpio = ponente.split("(")[0].strip().lower()
+        palabras_nombre = [p for p in re.findall(r'\b\w+\b', nombre_limpio) if len(p) > 3]
+        
+        # Contamos cuántas palabras del nombre aparecen en la pregunta
+        matches = sum(1 for p in palabras_nombre if p in palabras_pregunta)
+        if matches > 0:
+            ponentes_scores[ponente] = matches
+            
+    if not ponentes_scores:
+        return []
+        
+    # Solo nos quedamos con los ponentes que tengan la máxima puntuación
+    max_score = max(ponentes_scores.values())
+    ponentes_encontrados = [p for p, score in ponentes_scores.items() if score == max_score]
+            
+    return ponentes_encontrados
+
 # ─────────────────────────────────────────────────────────────
 # FUNCIÓN 1: BÚSQUEDA CON MEMORIA
 # ─────────────────────────────────────────────────────────────
@@ -410,12 +493,44 @@ def buscar(pregunta: str, video_id: str) -> dict:
     es_votacion = (not es_global) and _es_pregunta_votacion(pregunta)
     es_ponente  = (not es_global) and (not es_votacion) and _es_pregunta_ponente(pregunta)
 
+    ponentes_detectados = []
+    if not es_global and not es_votacion:
+        ponentes_detectados = _detectar_ponentes_en_pregunta(pregunta, video_id)
+        if ponentes_detectados:
+            es_ponente = True
+
     top_k = TOP_K_PONENTE if es_ponente else TOP_K_TEMATICA
+
+    condiciones_and = [{"video_id": {"$eq": video_id}}]
+    
+    # Excluir la Mesa solo si no mencionan la palabra "mesa" en la pregunta.
+    if "mesa" not in pregunta.lower():
+        condiciones_and.append({"partido": {"$ne": "Mesa"}})
+        
+    # Filtrado exacto de Ponente / Partido (Mejora A)
+    partidos_detectados = [p for p in _PARTIDOS_CONOCIDOS if p.lower() in pregunta.lower() and p != "Mesa"]
+    
+    if ponentes_detectados:
+        if len(ponentes_detectados) == 1:
+            condiciones_and.append({"ponente": {"$eq": ponentes_detectados[0]}})
+        else:
+            condiciones_and.append({"ponente": {"$in": ponentes_detectados}})
+    elif partidos_detectados:
+        if len(partidos_detectados) == 1:
+            condiciones_and.append({"partido": {"$eq": partidos_detectados[0]}})
+        else:
+            condiciones_and.append({"partido": {"$in": partidos_detectados}})
+            
+    where_filtro = {"$and": condiciones_and} if len(condiciones_and) > 1 else condiciones_and[0]
 
     if es_global:
         # Pregunta sobre TODO el vídeo (ej. "resúmeme", "de qué trata"):
         # usamos una muestra repartida por todo el vídeo, no búsqueda semántica.
-        documentos, metadatos = _muestrear_video_completo(video_id, n_fragmentos=40)
+        documentos, metadatos = _muestrear_video_completo(
+            video_id, 
+            n_fragmentos=40,
+            excluir_mesa=("mesa" not in pregunta.lower())
+        )
 
     elif es_votacion:
         # Pregunta sobre votaciones: combinamos búsqueda semántica normal
@@ -425,7 +540,7 @@ def buscar(pregunta: str, video_id: str) -> dict:
         resultados = collection.query(
             query_texts=[pregunta],
             n_results=top_k,
-            where={"video_id": {"$eq": video_id}},
+            where=where_filtro,
             include=["documents", "metadatas"]
         )
         docs_semanticos  = resultados["documents"][0]
@@ -445,7 +560,7 @@ def buscar(pregunta: str, video_id: str) -> dict:
         resultados = collection.query(
             query_texts=[pregunta],
             n_results=top_k * 2,
-            where={"video_id": {"$eq": video_id}},
+            where=where_filtro,
             include=["documents", "metadatas"]
         )
         documentos = resultados["documents"][0]
@@ -462,6 +577,9 @@ def buscar(pregunta: str, video_id: str) -> dict:
             "respuesta_llm": f"No se encontraron fragmentos relevantes en el video '{video_id}'.",
             "fuentes_top_k": []
         }
+
+    # Fusión de chunks contiguos (Mejora B)
+    documentos, metadatos = _fusionar_chunks_contiguos(documentos, metadatos)
 
     # 2. Construir contexto
     contexto = _construir_contexto(documentos, metadatos)
@@ -968,8 +1086,14 @@ def obtener_intervencion_completa(video_id: str, ponente: str, inicio: float, fi
         # Usamos el nombre real (si se conoce) del primer fragmento encontrado
         nombre_real = _nombre_mostrar(pares[0][0])
 
+        docs_a_fusionar = [p[1] for p in pares]
+        metas_a_fusionar = [p[0] for p in pares]
+        
+        # Fusión de chunks contiguos (Mejora B)
+        docs_fusionados, metas_fusionados = _fusionar_chunks_contiguos(docs_a_fusionar, metas_a_fusionar)
+
         texto_exacto = ""
-        for meta, doc in pares:
+        for meta, doc in zip(metas_fusionados, docs_fusionados):
             if meta["inicio"] <= fin and meta["fin"] >= inicio:
                 texto_exacto = doc
                 break
@@ -980,7 +1104,7 @@ def obtener_intervencion_completa(video_id: str, ponente: str, inicio: float, fi
                 "fin":    _segundos_a_mmss(meta["fin"]),
                 "texto":  doc
             }
-            for meta, doc in pares
+            for meta, doc in zip(metas_fusionados, docs_fusionados)
         ]
 
         return {
@@ -1095,11 +1219,20 @@ def buscar_transversal(pregunta: str, partido: str = None, top_k: int = TOP_K_TR
 
     # 1. Si no nos dan un partido explícito, intentamos detectarlo en la pregunta
     if partido is None:
-        partido = _detectar_partido_en_pregunta(pregunta)
+        partido_detectado = _detectar_partido_en_pregunta(pregunta)
+        # Solo usar el partido detectado si no se nombra a la mesa explícitamente y a otro partido a la vez
+        if partido_detectado and "mesa" in pregunta.lower() and partido_detectado != "Mesa":
+            partido = None
+        else:
+            partido = partido_detectado
 
-    # 2. Filtro de metadatos: SIN video_id (así busca en toda la colección),
-    #    opcionalmente con partido si se detectó o se indicó uno
-    where = {"partido": {"$eq": partido}} if partido else None
+    if partido is None:
+        if "mesa" not in pregunta.lower():
+            where = {"partido": {"$ne": "Mesa"}}
+        else:
+            where = None
+    else:
+        where = {"partido": {"$eq": partido}}
 
     # 3. Búsqueda semántica en toda la colección.
     #    Pedimos el doble de top_k para poder filtrar ruido y aun así
@@ -1125,6 +1258,9 @@ def buscar_transversal(pregunta: str, partido: str = None, top_k: int = TOP_K_TR
             "respuesta_llm": f"No se encontraron fragmentos relevantes{filtro_txt} en ningún vídeo.",
             "fuentes_top_k": []
         }
+
+    # Fusión de chunks contiguos (Mejora B)
+    documentos, metadatos = _fusionar_chunks_contiguos(documentos, metadatos)
 
     # 4. Construir contexto (con título/fecha de vídeo, al venir de varias sesiones)
     contexto = _construir_contexto_transversal(documentos, metadatos)

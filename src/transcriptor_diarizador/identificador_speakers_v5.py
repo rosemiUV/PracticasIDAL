@@ -2703,6 +2703,11 @@ def identificar_video(
     if n_fusion:
         logging.info(f"FUSIÓN fingerprints: {n_fusion} chunks actualizados")
 
+    # ── FIX 5: Evitar nulos en metadatos (Mejora C) ──────────────────────
+    for chunk in chunks:
+        if not chunk.get("partido"):
+            chunk["partido"] = "Desconocido"
+
     guardar_json(chunks, ruta_json_salida)
 
     # ── Resumen final ────────────────────────────────────────────────────
