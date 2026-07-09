@@ -1,6 +1,96 @@
 """
-identificador_speakers_v2_7.py
+identificador_speakers_v2_14.py
 Bloque de identificación de speakers para el pipeline "Buscador Plenario Inteligente".
+
+Versión 2.14 — Partido del diccionario expuesto a LLM-DICT:
+
+  CAMBIO PRINCIPAL — NOMBRE_A_PARTIDO extrae, leyendo el propio código
+  fuente (los comentarios "# PNV", "# Senador", etc. junto a cada entrada
+  de ALIASES_NOMBRE_COMPLETO), un mapa nombre canónico -> partido para las
+  1703 entradas del diccionario (~1130 con partido real, ~570 senadores/
+  gobierno con solo el rol). La lista de candidatos que recibe LLM-DICT
+  ahora muestra "Nombre (Partido)" en vez de solo el nombre. Además, si la
+  Mesa no menciona el partido explícitamente, se usa como respaldo el
+  partido verificado del diccionario para el nombre ya resuelto (ignorando
+  "Senador"/"Gobierno", que no son partidos reales) antes de aceptar lo que
+  diga el LLM. Esto añade una segunda red de seguridad, independiente de la
+  extracción por palabra clave del texto de Mesa (v2.13): para los 3 casos
+  reales de esa versión donde faltaba el partido, el diccionario YA tenía
+  el dato correcto (Otero Gabirondo→EH Bildu, Rentería Lasanta→PNV, Rego
+  Candamil→Mixto).
+
+Versión 2.13 — Grounding de partido + muestreo de chunks con cierre incluido:
+
+  CAMBIO PRINCIPAL — Detectados con datos reales de producción: (1) el LLM
+  ignoraba a veces el partido que la propia Mesa decía explícitamente y
+  "anclaba" en el partido más frecuente del contexto (ej. asignó PSOE a un
+  diputado de PNV, uno de Bildu y uno del Grupo Mixto, los tres con el
+  partido correcto dicho literalmente por la Mesa). Ahora
+  _partido_desde_texto_mesa() extrae el partido por palabra clave del texto
+  de Mesa en código (no depende del LLM) y SOBREESCRIBE lo que diga el LLM
+  cuando hay mención explícita, en LLM-DESC y LLM-DICT. (2) indices[:4]
+  siempre cogía los primeros chunks del bloque, pero la autoidentificación
+  de partido a menudo está en el CIERRE del discurso (último chunk), que en
+  bloques de más de 4 chunks nunca se incluía. Ahora se cogen los 3
+  primeros + el último.
+
+Versión 2.12 — Fix de truncado en texto_speaker (LLM-DESC y LLM-DICT):
+
+  CAMBIO PRINCIPAL — texto_speaker se construía uniendo hasta 4 chunks y
+  cortando la CONCATENACIÓN a 600/500 caracteres. Si el primer chunk del
+  bloque ya superaba ese límite (caso real detectado: orador de Vox cuyo
+  primer chunk tenía 1038 caracteres), los chunks siguientes —incluida una
+  frase de autoidentificación de partido como "somos nosotros, Vox..."—
+  nunca llegaban al prompt. Ahora cada chunk se trunca por separado antes
+  de unirlos (400 car. en LLM-DESC, 300 en LLM-DICT), así el corte nunca se
+  come chunks completos posteriores del mismo bloque.
+
+Versión 2.11 — Few-shots + candidatos de diccionario para LLM-DICT:
+
+  CAMBIO PRINCIPAL — Ambos prompts (LLM-DESC y LLM-DICT) incluyen ahora 4
+  ejemplos few-shot con casos reales (incluido el fallo real de "Bellugera
+  Balañá" -> "Pilar Vallugera Balañà" que se detectó en producción), y uno
+  de anti-alucinación explícito para enseñar a devolver null cuando no hay
+  información suficiente. Además, LLM-DICT ya NO se apoya solo en el
+  conocimiento del modelo: antes de llamarlo, _candidatos_diccionario() hace
+  una búsqueda difusa local (difflib) contra los ~661 nombres canónicos del
+  diccionario y le pasa al LLM solo los 5-6 más parecidos textualmente al
+  nombre deformado, en vez del diccionario entero (inviable: ~11 500 tokens,
+  por encima del límite de 6 000 TPM del free tier de Groq).
+
+Versión 2.10 — Migrado de Gemini a Groq:
+
+  CAMBIO PRINCIPAL — LLM-DESC y LLM-DICT ya no llaman a Gemini, llaman a la
+  API de Groq (requiere `pip install groq` y la variable de entorno
+  GROQ_API_KEY). Modelo usado: llama-3.1-8b-instant, que en el free tier de
+  Groq permite el mayor número de llamadas diarias del catálogo Llama
+  (14 400 RPD / 30 RPM / 6 000 TPM), muy por encima de llama-3.3-70b-versatile
+  (1 000 RPD). La lógica de prompts, umbrales y actualización de fingerprints
+  no cambia — solo el proveedor del LLM (_llamar_groq reemplaza a
+  _llamar_gemini_nuevo).
+
+Versión 2.9 — Salida en consola para LLM-DESC/LLM-DICT:
+
+  CAMBIO PRINCIPAL — logging.basicConfig solo escribe al fichero de log, no
+  a la consola, así que las llamadas al LLM y sus resultados eran invisibles
+  en tiempo real. Ahora identificar_desconocidos_con_llm() y
+  verificar_nombres_fuera_diccionario_con_llm() imprimen en consola cada
+  llamada que hacen y si el resultado provoca un cambio (✓) o no (✗/⚠).
+
+Versión 2.8 — LLM-1 y LLM-2 eliminados por completo:
+
+  CAMBIO PRINCIPAL — Se retiran identificar_con_gemini() (LLM-1) y
+  verificar_heuristica_con_llm() (LLM-2). Ambas funciones llamaban a un
+  objeto `modelo` que nunca se definía (resto de la SDK antigua
+  google-generativeai, nunca migrado a la SDK nueva google-genai), por lo
+  que LLM-1 fallaba en cada llamada con NameError ("name 'modelo' is not
+  defined") y gastaba cuota de Gemini sin producir resultados. LLM-2 ya
+  estaba desactivado con `if False:`.
+  Ahora la única resolución por LLM ocurre después del bucle principal,
+  vía LLM-DESC (identificar_desconocidos_con_llm) y LLM-DICT
+  (verificar_nombres_fuera_diccionario_con_llm), que sí usan la SDK nueva
+  correctamente. Los chunks que antes intentaban LLM-1 en el bucle
+  principal ahora quedan DESCONOCIDO/AMBIGUO y los recoge LLM-DESC.
 
 Versión 2.7 — LLM-2 reducido sobre v2.6:
 
@@ -29,8 +119,8 @@ Versión 2.7 — LLM-2 reducido sobre v2.6:
   Conserva todos los cambios de v2.4/v2.3/v2.2/v2.1.
 
 Uso:
-    python identificador_speakers_v2_7.py ruta/al/chunks.json
-    python identificador_speakers_v2_7.py ruta/al/chunks.json --sin-llm
+    python identificador_speakers_v2_14.py ruta/al/chunks.json
+    python identificador_speakers_v2_14.py ruta/al/chunks.json --sin-llm
 """
 
 import re
@@ -39,13 +129,14 @@ import time
 import logging
 import unicodedata
 import sys
+import difflib
 from pathlib import Path
 from collections import defaultdict
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # =============================================================
 # DICCIONARIOS
@@ -1811,6 +1902,91 @@ _NOMBRES_DE_APELLIDO_UNICO = set(ALIASES_APELLIDO_UNICO.values())
 # Alias combinado (solo para retrocompatibilidad interna)
 ALIASES_NOMBRES = {**ALIASES_NOMBRE_COMPLETO, **ALIASES_APELLIDO_UNICO}
 
+# Nombres canónicos únicos del diccionario (~661), usados para sugerir candidatos
+# acotados a LLM-DICT por similitud textual, en vez de mandar el diccionario entero
+# (que serían ~11 500 tokens y reventaría el TPM del free tier de Groq).
+_NOMBRES_CANONICOS_LOWER = {n.lower(): n for n in sorted(set(ALIASES_NOMBRES.values()))}
+
+
+def _construir_nombre_a_partido() -> dict:
+    """Extrae el partido (o rol: 'Senador'/'Gobierno') anotado como comentario
+    junto a cada entrada de ALIASES_NOMBRE_COMPLETO. Esa información solo existe
+    como comentario Python, así que no sobrevive en el dict ya cargado — hay que
+    releer el propio fichero fuente. Se ejecuta una sola vez al importar el
+    módulo. Si el fichero no se puede leer (p. ej. empaquetado sin fuente),
+    devuelve un dict vacío y todo sigue funcionando, solo que sin esta pista."""
+    try:
+        with open(__file__, "r", encoding="utf-8") as f:
+            contenido = f.read()
+        inicio = contenido.index("ALIASES_NOMBRE_COMPLETO = {")
+        fin = contenido.index("\n}", inicio)
+        bloque = contenido[inicio:fin]
+        mapa = {}
+        for linea in bloque.split("\n"):
+            m = re.match(r'\s*"[^"]+"\s*:\s*"([^"]+)"\s*,?\s*#\s*(.*)$', linea)
+            if m:
+                nombre, partido = m.group(1).strip(), m.group(2).strip()
+                if nombre not in mapa:
+                    mapa[nombre] = partido
+        return mapa
+    except Exception:
+        return {}
+
+
+# Nombre canónico -> partido (o 'Senador'/'Gobierno' si no se anotó partido real).
+# ~1130 de las 1703 entradas tienen partido real; ~570 (senadores y gobierno)
+# solo tienen el rol, no el partido — se muestra igualmente porque orienta al LLM.
+NOMBRE_A_PARTIDO = _construir_nombre_a_partido()
+
+
+def _candidatos_diccionario(nombre_deformado: str, top_n: int = 6) -> list:
+    """Devuelve hasta top_n nombres del diccionario más parecidos textualmente al
+    nombre deformado, para dárselos a LLM-DICT como candidatos acotados en vez de
+    pasarle el diccionario entero (inviable por tokens en el free tier de Groq)."""
+    if not nombre_deformado:
+        return []
+    parecidos = difflib.get_close_matches(
+        nombre_deformado.lower(), _NOMBRES_CANONICOS_LOWER.keys(), n=top_n, cutoff=0.5
+    )
+    return [_NOMBRES_CANONICOS_LOWER[k] for k in parecidos]
+
+
+# Extracción de partido por palabra clave, independiente de PATRONES_GRUPO/
+# grupo_a_partido (que falla con frases como "Grupo Parlamentario Vasco PNV" o
+# "Grupo Parlamentario Vasco de la JPNV" porque compara claves con el prefijo
+# "grupo parlamentario" contra texto capturado SIN ese prefijo). Se usa para
+# sobreescribir en código lo que diga el LLM sobre el partido — más fiable que
+# confiar en que el LLM lea bien el texto de la Mesa, que en la práctica hemos
+# visto que a veces ignora y "ancla" en el partido más frecuente del contexto.
+_PARTIDOS_POR_PALABRA_CLAVE = {
+    "psoe": "PSOE", "socialista": "PSOE",
+    "popular": "PP",
+    "vox": "Vox",
+    "republicano": "ERC", "erc": "ERC",
+    "junts": "Junts",
+    "sumar": "Sumar",
+    "bildu": "EH Bildu",
+    "vasco": "PNV", "pnv": "PNV",
+    "navarro": "UPN", "upn": "UPN",
+    "canaria": "CC",
+    "podemos": "Podemos",
+    "mixto": "Mixto",
+}
+
+
+def _partido_desde_texto_mesa(*textos) -> str:
+    """Busca menciones explícitas de un grupo parlamentario conocido en el texto
+    de la Mesa (presentación y/o cierre). Devuelve el partido si lo encuentra,
+    o None si no hay ninguna mención reconocible."""
+    for texto in textos:
+        if not texto:
+            continue
+        texto_l = texto.lower()
+        for clave, partido in _PARTIDOS_POR_PALABRA_CLAVE.items():
+            if clave in texto_l:
+                return partido
+    return None
+
 # FIX B: palabras de cargo que no deben tratarse como nombres
 PALABRAS_CARGO = {
     "ministro", "ministra",
@@ -2219,238 +2395,6 @@ def _resumen_fingerprints(fingerprints: dict) -> str:
     return "\n".join(lineas) if lineas else "  (ninguno identificado aún)"
 
 
-def identificar_con_gemini(
-    chunks: list,
-    idx: int,
-    fingerprints: dict,
-    umbral: float = 0.90,
-    ventana_size: int = 3,
-) -> dict:
-    """LLM-1: identifica speaker desde cero con contexto global de fingerprints."""
-    if not GEMINI_API_KEY:
-        return {"nombre": None, "partido": None, "confianza": 0.0, "razon": "Sin API key"}
-
-    try:
-        import google.generativeai as genai
-    except ImportError:
-        return {"nombre": None, "partido": None, "confianza": 0.0,
-                "razon": "google-generativeai no instalado"}
-
-    genai.configure(api_key=GEMINI_API_KEY)
-    modelo = genai.GenerativeModel("gemini-1.5-flash")
-
-    inicio = max(0, idx - ventana_size)
-    fin = min(len(chunks), idx + ventana_size + 1)
-
-    def _fmt(c):
-        nombre_conocido = fingerprints.get(c["ponente"], {}).get("nombre", "?")
-        return f"[t={c['inicio']:.0f}s | {c['ponente']} = {nombre_conocido}] {c['texto']}"
-
-    anteriores = "\n".join(_fmt(chunks[i]) for i in range(inicio, idx))
-    objetivo = f"[t={chunks[idx]['inicio']:.0f}s | {chunks[idx]['ponente']}] {chunks[idx]['texto']}"
-    posteriores = "\n".join(_fmt(chunks[i]) for i in range(idx + 1, fin))
-    ponente_id = chunks[idx]["ponente"]
-    resumen_fp = _resumen_fingerprints(fingerprints)
-
-    prompt = f"""Eres un experto en política española y en el funcionamiento del Congreso de los Diputados.
-
-SPEAKERS YA IDENTIFICADOS EN ESTE VÍDEO:
-{resumen_fp}
-
-CONTEXTO POLÍTICO:
-Grupos: PP, PSOE, Vox, Sumar, ERC, Junts, EH Bildu, PNV, Mixto.
-Cargos:
-- Presidenta del Congreso: Francina Armengol (partido: Mesa)
-- Presidente del Gobierno: Pedro Sánchez (PSOE)
-
-TRANSCRIPCIÓN (speakers conocidos aparecen con su nombre entre corchetes):
-[CONTEXTO PREVIO]
-{anteriores}
-
-[FRAGMENTO A IDENTIFICAR — ponente acústico sin identificar: {ponente_id}]
-{objetivo}
-
-[CONTEXTO POSTERIOR]
-{posteriores}
-
-Identifica quién es {ponente_id} basándote en:
-1. El contenido del discurso (partido, posición política, referencias).
-2. El contexto de presentación o agradecimiento de otros speakers.
-3. Los speakers ya identificados en este vídeo.
-
-IMPORTANTE: Si en el discurso se MENCIONA a un político (ej: "el señor Sánchez ha hecho X"),
-eso NO significa que el speaker sea esa persona. El speaker es quien está hablando, no quien es mencionado.
-
-Responde ÚNICAMENTE con este JSON (sin markdown):
-{{"nombre": "nombre completo o null", "partido": "partido o null", "confianza": 0.0, "razon": "máximo 120 caracteres"}}
-
-Reglas:
-- Solo pon nombre y partido si confianza >= {umbral}
-- Presidenta de mesa → partido "Mesa"
-- Si preside la sesión (frases como "vamos a votar", "se abre la sesión", "votos emitidos") → nombre="Francina Armengol", partido="Mesa"
-"""
-
-    for intento in range(3):
-        try:
-            time.sleep(1)
-            respuesta = modelo.generate_content(prompt)
-            texto = respuesta.text.strip()
-            texto = re.sub(r"^```(?:json)?\s*", "", texto)
-            texto = re.sub(r"\s*```$", "", texto)
-            datos = json.loads(texto)
-            if datos.get("confianza", 0) < umbral:
-                datos["nombre"] = None
-                datos["partido"] = None
-            return datos
-        except Exception as e:
-            if intento < 2:
-                time.sleep(2 ** intento)
-            else:
-                return {"nombre": None, "partido": None, "confianza": 0.0, "razon": str(e)[:100]}
-
-    return {"nombre": None, "partido": None, "confianza": 0.0, "razon": "Sin respuesta"}
-
-
-def verificar_heuristica_con_llm(
-    nombre_heuristica: str,
-    nombre_raw: str | None,
-    partido_heuristica: str | None,
-    fragmento_presentacion: str | None,
-    chunks: list,
-    idx: int,
-    fingerprints: dict,
-    umbral: float = 0.90,
-) -> dict:
-    """
-    LLM-2: verifica si el nombre propuesto por heurística es correcto.
-
-    v2.4: recibe nombre_raw (sin normalizar, ej: "Mejía Sánchez") además del
-    nombre normalizado ("Pedro Sánchez"). El prompt presenta el nombre_raw
-    como la información principal — así el LLM razona sobre lo que Whisper
-    capturó realmente, sin distorsión previa del sistema.
-    """
-    if not GEMINI_API_KEY:
-        return {"confirmado": True, "nombre": nombre_heuristica,
-                "partido": partido_heuristica, "confianza": umbral}
-
-    try:
-        import google.generativeai as genai
-    except ImportError:
-        return {"confirmado": True, "nombre": nombre_heuristica,
-                "partido": partido_heuristica, "confianza": umbral}
-
-    genai.configure(api_key=GEMINI_API_KEY)
-    modelo = genai.GenerativeModel("gemini-1.5-flash")
-
-    inicio = max(0, idx - 4)
-    fin = min(len(chunks), idx + 5)
-    ventana_texto = "\n".join(
-        f"[{chunks[i]['ponente']}] {chunks[i]['texto']}"
-        for i in range(inicio, fin)
-    )
-    resumen_fp = _resumen_fingerprints(fingerprints)
-
-    # El nombre_raw es la pieza central: lo que Whisper transcribió realmente
-    nombre_a_mostrar = nombre_raw if nombre_raw else nombre_heuristica
-    nota_normalizacion = (
-        f'(el sistema lo normalizó a "{nombre_heuristica}", '
-        f'pero puede ser incorrecto si el apellido es compuesto)'
-    ) if nombre_raw and nombre_raw.lower() != nombre_heuristica.lower() else ""
-
-    bloque_presentacion = (
-        f'TEXTO LITERAL DE LA PRESENTACIÓN:\n  "{fragmento_presentacion}"\n'
-    ) if fragmento_presentacion else ""
-
-    prompt = f"""Eres un experto en política española y en el Congreso de los Diputados.
-Tu tarea es verificar si el nombre que el sistema ha detectado para un speaker es correcto.
-
-════════════════════════════════════════════════════════
-EJEMPLOS DE RAZONAMIENTO CORRECTO (few-shots):
-════════════════════════════════════════════════════════
-
-EJEMPLO 1 — Apellido compuesto mal interpretado:
-  Texto literal: "tiene la palabra la señora Baquiero Montero"
-  Sistema propone: "Irene Montero" (capturó solo "Montero")
-  Razonamiento: El texto dice "Baquiero Montero" — hay un primer apellido antes de "Montero".
-    Irene Montero NO tiene ese primer apellido. El contexto muestra grupo PNV.
-  Respuesta: {{"confirmado": false, "nombre": "Maribel Vaquero Montero", "partido": "PNV", "confianza": 0.93, "razon": "Baquiero=Vaquero, primer apellido distinto, contexto PNV"}}
-
-EJEMPLO 2 — Apellido común con primer apellido diferente:
-  Texto literal: "tiene la palabra la señora Mejía Sánchez"
-  Sistema propone: "Pedro Sánchez" (capturó solo "Sánchez")
-  Razonamiento: El texto dice "Mejía Sánchez" — hay un primer apellido "Mejía".
-    Pedro Sánchez NO tiene ese primer apellido. El contexto muestra grupo Vox.
-    Carina Mejías Sánchez es diputada de Vox con ese apellido compuesto.
-  Respuesta: {{"confirmado": false, "nombre": "Carina Mejías Sánchez", "partido": "Vox", "confianza": 0.92, "razon": "Mejía Sánchez≠Pedro Sánchez, contexto Vox, diputada conocida"}}
-
-EJEMPLO 3 — Nombre correcto confirmado:
-  Texto literal: "tiene la palabra el señor Rufián"
-  Sistema propone: "Gabriel Rufián" (alias único)
-  Razonamiento: "Rufián" es apellido único en el Congreso. El contexto muestra ERC.
-    Gabriel Rufián es el único diputado con ese apellido.
-  Respuesta: {{"confirmado": true, "nombre": "Gabriel Rufián", "partido": "ERC", "confianza": 0.97, "razon": "Apellido único en Congreso, contexto ERC confirma"}}
-
-EJEMPLO 4 — Mención en discurso ≠ speaker:
-  Texto literal: "tiene la palabra la señora Martínez"
-  Sistema propone: "Pedro Sánchez" por contexto del discurso (hablan del gobierno)
-  Razonamiento: El texto de presentación dice "señora Martínez", no "señor Sánchez".
-    El speaker es una mujer. Que se mencione a Sánchez en el discurso no significa que sea él.
-  Respuesta: {{"confirmado": false, "nombre": null, "partido": null, "confianza": 0.0, "razon": "Presentación dice señora Martínez, no Pedro Sánchez"}}
-
-════════════════════════════════════════════════════════
-CASO A RESOLVER:
-════════════════════════════════════════════════════════
-
-TAREA: Identificar quién es el speaker "{chunks[idx]['ponente']}".
-
-{bloque_presentacion}
-NOMBRE CAPTURADO POR WHISPER: "{nombre_a_mostrar}" {nota_normalizacion}
-
-SPEAKERS YA IDENTIFICADOS EN ESTE VÍDEO:
-{resumen_fp}
-
-CONTEXTO (±4 chunks):
-{ventana_texto}
-
-INSTRUCCIONES:
-1. Lee primero el TEXTO LITERAL DE LA PRESENTACIÓN — es la pista más fiable.
-2. Si el nombre capturado tiene primer apellido, ese primer apellido descarta identidades
-   que no lo tengan (ej: "Mejía Sánchez" descarta a Pedro Sánchez).
-3. Cruza el partido del contexto con el nombre para confirmar.
-4. Si no puedes determinarlo con seguridad, devuelve confirmado=false y nombre=null.
-
-Responde ÚNICAMENTE con este JSON (sin markdown):
-{{"confirmado": true/false, "nombre": "nombre completo correcto o null", "partido": "partido o null", "confianza": 0.0, "razon": "máximo 120 caracteres"}}
-
-Reglas:
-- confirmado=true si el nombre propuesto es correcto.
-- confirmado=false + nombre correcto si sabes quién es realmente.
-- confirmado=false + nombre=null si no puedes determinarlo.
-- Solo pon nombre si confianza >= {umbral}
-- Que alguien mencione a un político en su discurso NO significa que ese sea el speaker.
-- El texto literal de presentación tiene prioridad absoluta sobre el contexto del discurso.
-"""
-
-    for intento in range(2):
-        try:
-            time.sleep(1)
-            respuesta = modelo.generate_content(prompt)
-            texto = respuesta.text.strip()
-            texto = re.sub(r"^```(?:json)?\s*", "", texto)
-            texto = re.sub(r"\s*```$", "", texto)
-            datos = json.loads(texto)
-            return {
-                "confirmado": datos.get("confirmado", True),
-                "nombre": datos.get("nombre", nombre_heuristica),
-                "partido": datos.get("partido", partido_heuristica),
-                "confianza": datos.get("confianza", umbral),
-            }
-        except Exception:
-            if intento == 0:
-                time.sleep(2)
-
-    return {"confirmado": True, "nombre": nombre_heuristica,
-            "partido": partido_heuristica, "confianza": 0.90}
 
 
 # =============================================================
@@ -2527,6 +2471,332 @@ def fusionar_fingerprints_por_nombre(chunks: list, fingerprints: dict) -> int:
 UMBRAL_LLM2_MAX = 0.97
 
 
+
+# =============================================================
+# NUEVAS FUNCIONES LLM (reemplazan LLM-1 y LLM-2)
+# =============================================================
+
+def _buscar_contexto_mesa(chunks: list, idx: int) -> str:
+    """Chunks de Mesa consecutivos anteriores al chunk dado."""
+    ponente = chunks[idx]["ponente"]
+    textos = []
+    for j in range(idx - 1, max(idx - 15, -1), -1):
+        c = chunks[j]
+        es_mesa = c.get("partido") == "Mesa" or c.get("nombre") == "Francina Armengol"
+        if c["ponente"] == ponente:
+            continue
+        if not es_mesa:
+            break
+        textos.insert(0, c["texto"])
+    return " ".join(textos).strip()
+
+
+def _buscar_contexto_mesa_posterior(chunks: list, idx: int) -> str:
+    """Chunks de Mesa consecutivos posteriores al chunk dado."""
+    ponente = chunks[idx]["ponente"]
+    textos = []
+    for j in range(idx + 1, min(idx + 10, len(chunks))):
+        c = chunks[j]
+        es_mesa = c.get("partido") == "Mesa" or c.get("nombre") == "Francina Armengol"
+        if c["ponente"] == ponente:
+            continue
+        if not es_mesa:
+            break
+        textos.append(c["texto"])
+    return " ".join(textos).strip()
+
+
+def _nombre_fuera_diccionario(nombre_raw: str) -> bool:
+    """True si el nombre no tiene match en el diccionario."""
+    if not nombre_raw:
+        return False
+    clave = _quitar_tildes(nombre_raw.strip().lower())
+    tokens = clave.split()
+    if clave in ALIASES_NOMBRE_COMPLETO:
+        return False
+    if len(tokens) > 1:
+        for alias in ALIASES_NOMBRE_COMPLETO:
+            if len(alias.split()) > 1 and (alias in clave or clave in alias):
+                return False
+    if corregir_nombre_whisper(nombre_raw):
+        return False
+    if tokens and tokens[-1] in ALIASES_APELLIDO_UNICO:
+        return False
+    return True
+
+
+def _llamar_groq(api_key: str, prompt: str, modelo: str = "llama-3.1-8b-instant") -> str:
+    """Wrapper para llamar a la API de Groq (OpenAI-compatible).
+
+    Modelo por defecto: llama-3.1-8b-instant — es el modelo del free tier de Groq
+    con más llamadas diarias permitidas (14 400 RPD / 30 RPM / 6 000 TPM a fecha
+    de escritura), muy por encima de llama-3.3-70b-versatile (1 000 RPD) u otros
+    modelos Llama del catálogo gratuito. Requiere `pip install groq`.
+    """
+    from groq import Groq as _Groq
+    cliente = _Groq(api_key=api_key)
+    respuesta = cliente.chat.completions.create(
+        model=modelo,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+    )
+    texto = respuesta.choices[0].message.content.strip() if respuesta.choices[0].message.content else ""
+    if texto.startswith("```"):
+        texto = texto.strip("```json").strip("```").strip()
+    return texto
+
+
+def identificar_desconocidos_con_llm(chunks, fingerprints, api_key, umbral=0.75):
+    """LLM-DESC: identifica chunks DESCONOCIDO usando contexto de Mesa."""
+    bloques = {}
+    for i, c in enumerate(chunks):
+        if c["estado_id"] in ("DESCONOCIDO", "AMBIGUO") and not c.get("nombre"):
+            sp = c["ponente"]
+            if sp not in bloques:
+                bloques[sp] = []
+            bloques[sp].append(i)
+
+    if bloques:
+        print(f"\n[LLM-DESC] {len(bloques)} bloque(s) DESCONOCIDO/AMBIGUO por resolver...")
+
+    n = 0
+    for ponente, indices in bloques.items():
+        primer_idx = indices[0]
+        texto_mesa = _buscar_contexto_mesa(chunks, primer_idx)
+        # Se trunca CADA chunk por separado (no la concatenación entera) para que
+        # un primer chunk largo no se coma el espacio de los siguientes — así no
+        # se pierden frases de autoidentificación de partido que aparecen más
+        # adelante en el bloque (caso real: "somos nosotros, Vox..." en el 2º chunk).
+        # Se incluyen los 3 primeros chunks + el último del bloque (no solo los
+        # 4 primeros): la autoidentificación de partido a menudo aparece en el
+        # cierre del discurso, no al principio (casos reales: "el Partido
+        # Socialista Obrero Español..." y "mi portavoz, Miriam Nogueiras..." en
+        # el último chunk de bloques de 5-6 chunks, que antes se perdían siempre).
+        indices_muestra = indices[:3] + [indices[-1]] if len(indices) > 3 else indices[:4]
+        texto_speaker = " ".join(chunks[i]["texto"][:400] for i in indices_muestra)
+        partido_mesa = _partido_desde_texto_mesa(texto_mesa)
+        if not texto_mesa and not texto_speaker:
+            print(f"[LLM-DESC] {ponente}: sin contexto de Mesa ni texto propio, se omite")
+            continue
+
+        print(f"[LLM-DESC] → Llamando a Groq: {ponente} ({len(indices)} chunk(s), "
+              f"contexto Mesa={'sí' if texto_mesa else 'no'})")
+
+        prompt = (
+            "Eres un experto en política española y en el Congreso de los Diputados.\n\n"
+            "TAREA: Identificar quién es el orador.\n\n"
+            "EJEMPLOS:\n\n"
+            "Ejemplo 1 — apertura estándar con grupo explícito:\n"
+            'PRESENTACIÓN DE LA MESA: "Para defender la enmienda, tiene la palabra, '
+            'por el Grupo Parlamentario Republicano, el señor Rufián."\n'
+            'TEXTO DEL ORADOR: "Gracias, presidenta. Señorías, venimos hoy a hablar de..."\n'
+            '→ {"nombre": "Rufián", "partido": "ERC", "confianza": 0.95, '
+            '"razon": "Mesa nombra directamente al orador y su grupo"}\n\n'
+            "Ejemplo 2 — cierre y apertura combinados en el mismo chunk:\n"
+            'PRESENTACIÓN DE LA MESA: "Muchas gracias, señor Echániz. Tiene ahora la palabra, '
+            'por el Grupo Parlamentario Vasco (EAJ-PNV), el señor Esteban."\n'
+            'TEXTO DEL ORADOR: "Mila esker, presidenta. Como decíamos..."\n'
+            '→ {"nombre": "Esteban", "partido": "PNV", "confianza": 0.95, '
+            '"razon": "Cierre del anterior y apertura del nuevo orador en el mismo bloque"}\n\n'
+            "Ejemplo 3 — la Mesa no menciona el partido, se deduce del propio discurso:\n"
+            'PRESENTACIÓN DE LA MESA: "Tiene la palabra el señor Bel."\n'
+            'TEXTO DEL ORADOR: "Gracias, presidenta. Desde Junts per Catalunya consideramos que..."\n'
+            '→ {"nombre": "Bel", "partido": "Junts", "confianza": 0.8, '
+            '"razon": "Partido deducido del propio texto del orador, no de la Mesa"}\n\n'
+            "Ejemplo 4 — información insuficiente, NO inventar:\n"
+            'PRESENTACIÓN DE LA MESA: "(no disponible)"\n'
+            'TEXTO DEL ORADOR: "Un momento, por favor. Un segundo."\n'
+            '→ {"nombre": null, "partido": null, "confianza": 0.0, '
+            '"razon": "Sin presentación de Mesa ni contenido suficiente en el texto"}\n\n'
+            "AHORA RESUELVE ESTE CASO:\n\n"
+            f"PRESENTACIÓN DE LA MESA:\n{texto_mesa or '(no disponible)'}\n\n"
+            f"TEXTO DEL ORADOR:\n{texto_speaker}\n\n"
+            f"ORADORES YA IDENTIFICADOS:\n{_resumen_fingerprints(fingerprints)}\n\n"
+            "INSTRUCCIONES: Lee la presentación de la Mesa — casi siempre tiene el nombre. "
+            "Si no, deduce el partido del texto del orador. Si no hay información suficiente, "
+            "sigue el patrón del Ejemplo 4: no inventes.\n\n"
+            'Responde SOLO con JSON: {"nombre": "nombre o null", "partido": "partido o null", "confianza": 0.0, "razon": "max 100 chars"}'
+        )
+        try:
+            texto_resp = _llamar_groq(api_key, prompt)
+            if not texto_resp:
+                print(f"[LLM-DESC]   ✗ {ponente}: respuesta vacía de Groq")
+                continue
+            datos = json.loads(texto_resp)
+            nombre_llm = datos.get("nombre")
+            partido_llm = partido_mesa or datos.get("partido")
+            confianza = float(datos.get("confianza", 0.0))
+            razon = datos.get("razon", "")
+            if partido_mesa and partido_mesa != datos.get("partido"):
+                razon += f" [partido corregido a {partido_mesa} por mención explícita de la Mesa]"
+            logging.info(f"[LLM-DESC] {ponente} → {nombre_llm} ({partido_llm}) conf={confianza:.2f} | {razon}")
+            if confianza < umbral or (not nombre_llm and not partido_llm):
+                print(f"[LLM-DESC]   ✗ {ponente}: sin cambio (conf={confianza:.2f} < {umbral}) | {razon}")
+                continue
+            nombre_final = None
+            if nombre_llm:
+                nombre_norm, _ = normalizar_nombre(nombre_llm.strip(), solo_completos=False)
+                nombre_final = nombre_norm or nombre_llm.strip()
+            n_bloque = 0
+            for i in indices:
+                c = chunks[i]
+                if not c.get("nombre"):
+                    c["nombre"] = nombre_final
+                    c["partido"] = partido_llm
+                    c["estado_id"] = "IDENTIFICADO" if confianza >= 0.85 else "AMBIGUO"
+                    c["confianza_id"] = confianza
+                    c["metodo_id"] = "llm_desconocidos"
+                    n += 1
+                    n_bloque += 1
+            print(f"[LLM-DESC]   ✓ {ponente} → {nombre_final} | {partido_llm} "
+                  f"(conf={confianza:.2f}, {n_bloque} chunk(s) actualizados)")
+            if nombre_final and confianza >= 0.85:
+                actualizar_fingerprint(fingerprints, ponente, {"nombre": nombre_final, "partido": partido_llm, "confianza": confianza})
+        except Exception as e:
+            print(f"[LLM-DESC]   ⚠ {ponente}: error llamando a Groq — {e}")
+            logging.error(f"[LLM-DESC] Error en {ponente}: {e}")
+    return n
+
+
+def verificar_nombres_fuera_diccionario_con_llm(chunks, fingerprints, api_key, umbral=0.78):
+    """LLM-DICT: corrige nombres deformados por Whisper no presentes en el diccionario."""
+    bloques = {}
+    for i, c in enumerate(chunks):
+        if (c["estado_id"] == "IDENTIFICADO"
+                and c.get("nombre")
+                and c.get("metodo_id") in ("heuristica", "fingerprint", "fingerprint_fusion")
+                and _nombre_fuera_diccionario(c["nombre"])):
+            sp = c["ponente"]
+            if sp not in bloques:
+                bloques[sp] = []
+            bloques[sp].append(i)
+
+    if not bloques:
+        return 0
+
+    print(f"\n[LLM-DICT] {len(bloques)} nombre(s) fuera de diccionario por verificar...")
+
+    n = 0
+    for ponente, indices in bloques.items():
+        primer_idx = indices[0]
+        ultimo_idx = indices[-1]
+        nombre_actual = chunks[primer_idx].get("nombre", "")
+        texto_mesa_prev = _buscar_contexto_mesa(chunks, primer_idx)
+        texto_mesa_post = _buscar_contexto_mesa_posterior(chunks, ultimo_idx)
+        # Se incluyen los 3 primeros chunks + el último del bloque (no solo los
+        # 4 primeros): la autoidentificación de partido a menudo aparece en el
+        # cierre del discurso, no al principio (caso real detectado: "el
+        # Partido Socialista Obrero Español..." en el último chunk de un bloque
+        # de 6, que antes se perdía siempre).
+        indices_muestra = indices[:3] + [indices[-1]] if len(indices) > 3 else indices[:4]
+        texto_speaker = " ".join(chunks[i]["texto"][:300] for i in indices_muestra)
+        partido_mesa = _partido_desde_texto_mesa(texto_mesa_prev, texto_mesa_post)
+
+        candidatos = _candidatos_diccionario(nombre_actual)
+        texto_candidatos = (
+            "\n".join(f"- {c} ({NOMBRE_A_PARTIDO.get(c, '?')})" for c in candidatos) if candidatos
+            else "(ninguno con similitud razonable)"
+        )
+
+        print(f"[LLM-DICT] → Llamando a Groq: {ponente} (nombre actual: '{nombre_actual}', "
+              f"{len(candidatos)} candidato(s) del diccionario)")
+
+        prompt = (
+            "Eres un experto en política española y en el Congreso de los Diputados.\n\n"
+            "TAREA: El sistema de reconocimiento de voz capturó un nombre posiblemente deformado. "
+            "Identifica el nombre real del orador. Puedes usar tu propio conocimiento, pero si "
+            "alguno de los CANDIDATOS DEL DICCIONARIO encaja con el contexto, prefiérelo — son "
+            "nombres reales ya verificados de diputados de esta legislatura, con su partido entre "
+            "paréntesis (dato verificado). Si el texto de la Mesa da un partido más específico que "
+            "el del candidato (p. ej. el candidato dice 'Mixto' pero la Mesa dice 'UPN'), usa el "
+            "de la Mesa, que es más preciso.\n\n"
+            "EJEMPLOS:\n\n"
+            "Ejemplo 1 — deformación de dos apellidos, confirmada por el cierre:\n"
+            "NOMBRE CAPTURADO: 'Bellugera Balañá'\n"
+            "CANDIDATOS DEL DICCIONARIO: Vallugera Balañà (ERC), Villalonga Ferrer (PSOE), Ballugera Gómez (PP)\n"
+            'CIERRE DE LA MESA (después): "Muchas gracias, señora Vallugera."\n'
+            '→ {"nombre": "Pilar Vallugera Balañà", "partido": "ERC", "confianza": 0.95, '
+            '"razon": "Cierre confirma apellido, coincide con candidato del diccionario"}\n\n'
+            "Ejemplo 2 — deformación fonética, sin cierre pero con candidato claro:\n"
+            "NOMBRE CAPTURADO: 'Baquiero Montero'\n"
+            "CANDIDATOS DEL DICCIONARIO: Vaquero Montero (PNV), Ballestero Montoro (PP)\n"
+            'TEXTO DEL ORADOR: "...como diputada del PNV, quiero trasladar..."\n'
+            '→ {"nombre": "Maribel Vaquero Montero", "partido": "PNV", "confianza": 0.9, '
+            '"razon": "Coincide fonéticamente con candidato del diccionario y el partido cuadra"}\n\n'
+            "Ejemplo 3 — nombre muy deformado, candidato correcto entre varios, y la Mesa da un partido más específico que el del diccionario:\n"
+            "NOMBRE CAPTURADO: 'Catalanes Hogueras'\n"
+            "CANDIDATOS DEL DICCIONARIO: Alberto Catalán Higueras (Mixto), Carlos Flores Juberías (Vox), Miriam Nogueras (Junts)\n"
+            'PRESENTACIÓN DE LA MESA (antes): "Tiene la palabra, por el Grupo Parlamentario Mixto, '
+            'el señor Catalán, de Unión del Pueblo Navarro."\n'
+            '→ {"nombre": "Alberto Catalán Higueras", "partido": "UPN", "confianza": 0.9, '
+            '"razon": "Mesa confirma apellido y da partido más específico (UPN) que el genérico Mixto del diccionario"}\n\n'
+            "Ejemplo 4 — ni el diccionario ni el conocimiento propio dan una respuesta segura:\n"
+            "NOMBRE CAPTURADO: 'Xilonga Prat'\n"
+            "CANDIDATOS DEL DICCIONARIO: (ninguno con similitud razonable)\n"
+            'TEXTO DEL ORADOR: "Gracias."\n'
+            '→ {"nombre": null, "partido": null, "confianza": 0.0, '
+            '"razon": "Sin candidato plausible ni contexto suficiente para confirmar"}\n\n'
+            "AHORA RESUELVE ESTE CASO:\n\n"
+            f"NOMBRE CAPTURADO (posiblemente deformado): '{nombre_actual}'\n\n"
+            f"CANDIDATOS DEL DICCIONARIO:\n{texto_candidatos}\n\n"
+            f"PRESENTACIÓN DE LA MESA (antes):\n{texto_mesa_prev or '(no disponible)'}\n\n"
+            f"CIERRE DE LA MESA (después):\n{texto_mesa_post or '(no disponible)'}\n\n"
+            f"TEXTO DEL ORADOR:\n{texto_speaker}\n\n"
+            f"ORADORES YA IDENTIFICADOS:\n{_resumen_fingerprints(fingerprints)}\n\n"
+            "INSTRUCCIONES: Si el cierre dice 'muchas gracias, señora X', X es el nombre real. "
+            "Usa presentación y texto para confirmar o precisar el partido del candidato. Si no hay "
+            "ninguna pista fiable, sigue el patrón del Ejemplo 4: no inventes.\n\n"
+            'Responde SOLO con JSON: {"nombre": "nombre correcto o null", "partido": "partido o null", "confianza": 0.0, "razon": "max 100 chars"}'
+        )
+        try:
+            texto_resp = _llamar_groq(api_key, prompt)
+            if not texto_resp:
+                print(f"[LLM-DICT]   ✗ {ponente}: respuesta vacía de Groq")
+                continue
+            datos = json.loads(texto_resp)
+            nombre_llm = datos.get("nombre")
+            partido_llm = partido_mesa or datos.get("partido")
+            confianza = float(datos.get("confianza", 0.0))
+            razon = datos.get("razon", "")
+            if partido_mesa and partido_mesa != datos.get("partido"):
+                razon += f" [partido corregido a {partido_mesa} por mención explícita de la Mesa]"
+            logging.info(f"[LLM-DICT] {ponente} '{nombre_actual}' → {nombre_llm} ({partido_llm}) conf={confianza:.2f} | {razon}")
+            if confianza < umbral or not nombre_llm:
+                print(f"[LLM-DICT]   ✗ {ponente}: sin cambio (conf={confianza:.2f} < {umbral}) | {razon}")
+                continue
+            nombre_norm, _ = normalizar_nombre(nombre_llm.strip(), solo_completos=False)
+            nombre_final = nombre_norm or nombre_llm.strip()
+            # Si la Mesa no dio partido explícito, usar el partido verificado del
+            # diccionario para el nombre ya resuelto — más fiable que la
+            # respuesta del LLM. "Senador"/"Gobierno" no son partidos reales
+            # (son entradas de senadores/gobierno sin partido anotado), así que
+            # se descartan como fuente de partido.
+            if not partido_mesa:
+                partido_dict = NOMBRE_A_PARTIDO.get(nombre_final)
+                if partido_dict not in (None, "Senador", "Gobierno") and partido_dict != partido_llm:
+                    razon += f" [partido corregido a {partido_dict} según diccionario verificado]"
+                    partido_llm = partido_dict
+            n_bloque = 0
+            for i in indices:
+                c = chunks[i]
+                if c.get("nombre") == nombre_actual:
+                    c["nombre"] = nombre_final
+                    if partido_llm:
+                        c["partido"] = partido_llm
+                    c["confianza_id"] = confianza
+                    c["metodo_id"] = "llm_correccion_dict"
+                    n += 1
+                    n_bloque += 1
+            print(f"[LLM-DICT]   ✓ {ponente}: '{nombre_actual}' → '{nombre_final}' | {partido_llm} "
+                  f"(conf={confianza:.2f}, {n_bloque} chunk(s) corregidos)")
+            if confianza >= 0.85:
+                actualizar_fingerprint(fingerprints, ponente, {"nombre": nombre_final, "partido": partido_llm or chunks[primer_idx].get("partido"), "confianza": confianza})
+        except Exception as e:
+            print(f"[LLM-DICT]   ⚠ {ponente}: error llamando a Groq — {e}")
+            logging.error(f"[LLM-DICT] Error en {ponente}: {e}")
+    return n
+
+
 def identificar_video(
     ruta_json_entrada: Path,
     ruta_json_salida: Path = None,
@@ -2543,13 +2813,13 @@ def identificar_video(
         filename=ruta_log, filemode="w", level=logging.INFO,
         format="%(asctime)s %(message)s", encoding="utf-8",
     )
-    logging.info(f"Iniciando identificación v2.7: {ruta_json_entrada}")
+    logging.info(f"Iniciando identificación v2.14: {ruta_json_entrada}")
 
     chunks = cargar_chunks(ruta_json_entrada)
     fingerprints: dict = {}
 
-    n_heuristica = n_fingerprint = n_llm = n_ambiguo = n_desconocido = 0
-    n_cierre_retroactivo = n_llamadas_gemini = n_verificaciones_llm = 0
+    n_heuristica = n_fingerprint = n_ambiguo = n_desconocido = 0
+    n_cierre_retroactivo = 0
 
     for idx, chunk in enumerate(chunks):
         ponente = chunk.get("ponente", "DESCONOCIDO")
@@ -2580,53 +2850,6 @@ def identificar_video(
             conf = h["confianza"]
             estado = "IDENTIFICADO" if conf >= 0.90 else "AMBIGUO"
 
-            # v2.7: LLM-2 solo cuando hay ambigüedad real — nombre desde
-            # apellido único. Los nombres multi-token del diccionario se
-            # aceptan directamente: son unívocos, no necesitan verificación.
-            debe_verificar = (
-                usar_llm
-                and h["nombre"]
-                and h.get("es_presentacion", False)
-                and h.get("nombre_es_apellido_unico", False)
-            )
-
-            if debe_verificar:
-                n_llamadas_gemini += 1
-                n_verificaciones_llm += 1
-                verif = verificar_heuristica_con_llm(
-                    h["nombre"],
-                    h.get("nombre_raw"),              # v2.4: sin normalizar
-                    h["partido"],
-                    h.get("fragmento_detectado"),
-                    chunks, idx, fingerprints,
-                    umbral=umbral_llm,
-                )
-                if verif["confirmado"] and verif["nombre"]:
-                    nombre_final = verif["nombre"]
-                    partido_final = verif.get("partido") or h["partido"]
-                    conf_final = max(conf, verif.get("confianza", conf))
-                    logging.info(
-                        f"[{idx}] LLM-2 CONFIRMA {ponente} → {nombre_final} "
-                        f"(heurística='{h['nombre']}', conf={conf_final:.2f})"
-                    )
-                else:
-                    nombre_final = verif.get("nombre")
-                    partido_final = verif.get("partido") or h["partido"]
-                    conf_final = verif.get("confianza", 0.0)
-                    logging.info(
-                        f"[{idx}] LLM-2 RECHAZA '{h['nombre']}' → "
-                        f"'{nombre_final}' (conf={conf_final:.2f})"
-                    )
-                    if not nombre_final or conf_final < umbral_llm:
-                        chunk.update({"nombre": h["nombre"], "partido": h["partido"],
-                                      "estado_id": "AMBIGUO", "confianza_id": conf,
-                                      "metodo_id": "heuristica"})
-                        n_ambiguo += 1
-                        continue
-                h = {**h, "nombre": nombre_final, "partido": partido_final,
-                     "confianza": conf_final, "nombre_es_apellido_unico": False}
-                estado = "IDENTIFICADO"
-
             chunk.update({"nombre": h["nombre"], "partido": h["partido"],
                           "estado_id": estado, "confianza_id": h["confianza"],
                           "metodo_id": "heuristica"})
@@ -2641,7 +2864,7 @@ def identificar_video(
             )
             continue
 
-        # ── 3. Análisis cambio de turno ─────────────────────────────────
+        # ── 3. Análisis cambio de turno ─────────────────────────────────────
         cambio_acustico = (idx == 0 or chunks[idx]["ponente"] != chunks[idx - 1]["ponente"])
         cambio_turno = detectar_cambio_turno(chunks, idx)
 
@@ -2650,63 +2873,59 @@ def identificar_video(
             logging.info(f"[{idx}] SKIP sin cambio acústico ni textual")
             continue
 
+        # LLM-1 eliminado (v2.8): los chunks que llegan aquí quedan
+        # DESCONOCIDO/AMBIGUO y se resuelven después con LLM-DESC.
         if cambio_acustico and not cambio_turno:
             chunk["estado_id"] = "AMBIGUO"
             n_ambiguo += 1
-            logging.info(f"[{idx}] AMBIGUO — cambio acústico sin cambio textual")
-            if not usar_llm:
-                continue
-            umbral_efectivo = max(umbral_llm, 0.92)
-            es_ambiguo = True
-        else:
-            umbral_efectivo = umbral_llm
-            es_ambiguo = False
-
-        ventana_llm = 6 if es_ambiguo else 3
-
-        # ── 4. LLM-1: identificación desde cero con contexto global ────
-        if usar_llm:
-            n_llamadas_gemini += 1
-            r = identificar_con_gemini(
-                chunks, idx, fingerprints,
-                umbral=umbral_efectivo, ventana_size=ventana_llm,
-            )
-            nombre_llm = r.get("nombre")
-            partido_llm = r.get("partido")
-            confianza_llm = r.get("confianza", 0.0)
-
-            if nombre_llm or partido_llm:
-                estado = "IDENTIFICADO" if confianza_llm >= umbral_llm else "AMBIGUO"
-                chunk.update({"nombre": nombre_llm, "partido": partido_llm,
-                              "estado_id": estado, "confianza_id": confianza_llm,
-                              "metodo_id": "llm"})
-                if estado == "IDENTIFICADO":
-                    actualizar_fingerprint(
-                        fingerprints, ponente,
-                        {"nombre": nombre_llm, "partido": partido_llm, "confianza": confianza_llm},
-                    )
-                    n_llm += 1
-                else:
-                    n_ambiguo += 1
-                logging.info(
-                    f"[{idx}] LLM-1 {ponente} → {nombre_llm} | {partido_llm} "
-                    f"({confianza_llm:.2f}) | {r.get('razon', '')}"
-                )
-            else:
-                n_desconocido += 1
-                logging.info(f"[{idx}] LLM-1 sin resultado ({r.get('razon', '')})")
+            logging.info(f"[{idx}] AMBIGUO — cambio acústico sin cambio textual (pendiente LLM-DESC)")
         else:
             n_desconocido += 1
+            logging.info(f"[{idx}] DESCONOCIDO — cambio textual detectado, pendiente LLM-DESC")
 
     # ── FIX 4: fusión de fingerprints ────────────────────────────────────
     n_fusion = fusionar_fingerprints_por_nombre(chunks, fingerprints)
     if n_fusion:
         logging.info(f"FUSIÓN fingerprints: {n_fusion} chunks actualizados")
 
-    # ── FIX 5: Evitar nulos en metadatos (Mejora C) ──────────────────────
-    for chunk in chunks:
-        if not chunk.get("partido"):
-            chunk["partido"] = "Desconocido"
+    # ── LLM-DESC: identificar desconocidos con contexto de Mesa ───────────
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if usar_llm and groq_key:
+        n_llm_desc = identificar_desconocidos_con_llm(chunks, fingerprints, api_key=groq_key)
+        if n_llm_desc:
+            logging.info(f"LLM-DESC: {n_llm_desc} chunks identificados")
+        n_llm_dict = verificar_nombres_fuera_diccionario_con_llm(chunks, fingerprints, api_key=groq_key)
+        if n_llm_dict:
+            logging.info(f"LLM-DICT: {n_llm_dict} nombres corregidos")
+    elif usar_llm and not groq_key:
+        print("[LLM-DESC/DICT] ⚠ GROQ_API_KEY no encontrada, se omite corrección por LLM")
+        logging.warning("GROQ_API_KEY no encontrada")
+
+    # ── PROPAGACIÓN GLOBAL por SPEAKER_ID ─────────────────────────────────
+    nombre_por_speaker = {}
+    for c in chunks:
+        if c["estado_id"] == "IDENTIFICADO" and c.get("nombre") and c["confianza_id"] >= 0.90:
+            sp = c["ponente"]
+            if sp not in nombre_por_speaker:
+                nombre_por_speaker[sp] = []
+            entrada = (c["nombre"], c.get("partido"))
+            if entrada not in nombre_por_speaker[sp]:
+                nombre_por_speaker[sp].append(entrada)
+
+    n_prop = 0
+    for c in chunks:
+        if c["estado_id"] in ("DESCONOCIDO", "AMBIGUO") and not c.get("nombre"):
+            sp = c["ponente"]
+            if sp in nombre_por_speaker and len(nombre_por_speaker[sp]) == 1:
+                nombre_p, partido_p = nombre_por_speaker[sp][0]
+                c["nombre"] = nombre_p
+                c["partido"] = partido_p
+                c["estado_id"] = "IDENTIFICADO"
+                c["confianza_id"] = 0.88
+                c["metodo_id"] = "propagacion_global"
+                n_prop += 1
+    if n_prop:
+        logging.info(f"PROPAGACIÓN GLOBAL: {n_prop} chunks")
 
     guardar_json(chunks, ruta_json_salida)
 
@@ -2716,29 +2935,30 @@ def identificar_video(
     n_ambiguo_final = sum(1 for c in chunks if c["estado_id"] == "AMBIGUO")
     n_desconocido_final = sum(1 for c in chunks if c["estado_id"] == "DESCONOCIDO")
 
-    print(f"\n--- RESUMEN IDENTIFICACIÓN v2.6 ---")
+    print(f"\n--- RESUMEN IDENTIFICACIÓN v2.14 ---")
     print(f"Total chunks:               {total}")
     print(f"Identificados:              {identificados} ({identificados*100//total if total else 0}%)")
     print(f"  Por heurística:           {n_heuristica}")
     print(f"  Por heurística (cierre):  {n_cierre_retroactivo}")
     print(f"  Por fingerprint:          {n_fingerprint}")
     print(f"  Por fusión fp:            {n_fusion}")
-    print(f"  Por LLM-1:                {n_llm}")
     print(f"Ambiguos:                   {n_ambiguo_final} ({n_ambiguo_final*100//total if total else 0}%)")
     print(f"Desconocidos:               {n_desconocido_final} ({n_desconocido_final*100//total if total else 0}%)")
-    print(f"Llamadas a Gemini (total):  {n_llamadas_gemini}")
-    print(f"  — LLM-2 verificaciones:   {n_verificaciones_llm}")
-    print(f"  — LLM-1 identificaciones: {n_llamadas_gemini - n_verificaciones_llm}")
+    n_llm_desc_tot = sum(1 for c in chunks if c.get("metodo_id") == "llm_desconocidos")
+    n_llm_dict_tot = sum(1 for c in chunks if c.get("metodo_id") == "llm_correccion_dict")
+    n_prop_tot     = sum(1 for c in chunks if c.get("metodo_id") == "propagacion_global")
+    if n_llm_desc_tot: print(f"  Por LLM-DESC (desconocidos): {n_llm_desc_tot}")
+    if n_llm_dict_tot: print(f"  Por LLM-DICT (corrección):   {n_llm_dict_tot}")
+    if n_prop_tot:     print(f"  Por propagación global:      {n_prop_tot}")
     print(f"Speakers únicos:            {len(set(c['ponente'] for c in chunks))}")
     print(f"Fingerprints activos:       {sum(1 for v in fingerprints.values() if not v.get('ambiguo'))}")
     print(f"\nJSON guardado en:  {ruta_json_salida}")
     print(f"Log guardado en:   {ruta_log}")
 
     logging.info(
-        f"FIN v2.7 — identificados={identificados}, cierre={n_cierre_retroactivo}, "
+        f"FIN v2.14 — identificados={identificados}, cierre={n_cierre_retroactivo}, "
         f"fusion={n_fusion}, ambiguos={n_ambiguo_final}, "
-        f"desconocidos={n_desconocido_final}, gemini={n_llamadas_gemini}, "
-        f"llm2_verificaciones={n_verificaciones_llm}"
+        f"desconocidos={n_desconocido_final}"
     )
     return ruta_json_salida
 
@@ -2749,7 +2969,7 @@ def identificar_video(
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Uso: python identificador_speakers_v2_7.py <ruta_json> [--sin-llm]")
+        print("Uso: python identificador_speakers_v2_14.py <ruta_json> [--sin-llm]")
         sys.exit(1)
 
     ruta = Path(sys.argv[1])
