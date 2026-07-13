@@ -270,3 +270,38 @@ def get_stats(request: StatsRequest):
     except Exception as e:
         print(f"Error generando estadísticas de tiempo: {e}")
         raise HTTPException(status_code=500, detail="Error generando estadísticas.")
+    
+@router.post('/votaciones')
+def get_votaciones(request: StatsRequest):
+    """
+    Devuelve las votaciones extraídas para un vídeo específico.
+    Si el vídeo no tuvo votaciones, devuelve un array vacío de forma segura.
+    """
+    import json
+    from pathlib import Path
+    
+    try:
+        # Construimos la ruta apuntando a la carpeta data/
+        ruta_script = Path(__file__).resolve().parent
+        ruta_votaciones = ruta_script.parent.parent / "data" / "votaciones" / f"votaciones_extraidas_{request.video_id}.json"
+        
+        # Si el archivo no existe, significa que ese pleno no tuvo votaciones
+        if not ruta_votaciones.exists():
+            return {
+                "video_id": request.video_id, 
+                "votaciones": [], 
+                "mensaje": "No se detectaron votaciones en este vídeo."
+            }
+            
+        # Si existe, lo leemos y lo devolvemos
+        with open(ruta_votaciones, "r", encoding="utf-8") as f:
+            datos_votaciones = json.load(f)
+            
+        return {
+            "video_id": request.video_id,
+            "votaciones": datos_votaciones
+        }
+        
+    except Exception as e:
+        print(f"Error recuperando votaciones para {request.video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Error al recuperar los datos de votaciones.")

@@ -10,6 +10,7 @@ from src.transcriptor_diarizador.procesador import configurar_ffmpeg_local, desc
 from src.transcriptor_diarizador.fusionador_pruebaV2 import fusionar_datos_para_rag
 from src.transcriptor_diarizador.identificador_speakers_v5 import identificar_video
 from src.transcriptor_diarizador.cargador_chroma import subir_datos_a_chroma
+from src.transcriptor_diarizador.extractor_votaciones import procesar_archivo, guardar_resultados
 
 configurar_ffmpeg_local()
 
@@ -118,6 +119,32 @@ def ejecutar_pipeline_completo(url_video: str, callback_progreso=None):
         # El JSON identificado es el que se sube a ChromaDB de aquí en adelante
         ruta_json_final = ruta_json_identificado
 
+        # =================================================================
+        # --- NUEVA FASE 4c: EXTRACCIÓN DE VOTACIONES ---
+        # =================================================================
+        print("\n--- FASE 4c: EXTRACCIÓN DE VOTACIONES ---")
+        if callback_progreso:
+            callback_progreso({"video_id": video_id, "progreso": 93, "estado": "Buscando y extrayendo votaciones del pleno..."})
+
+        try:
+            # 1. Leemos el JSON que acabamos de generar y extraer votaciones
+            votaciones = procesar_archivo(ruta_json_final)
+            
+            if votaciones:
+                # 2. Creamos la subcarpeta 'votaciones' dentro de 'data' si no existe
+                dir_votaciones = dir_data_root / "votaciones"
+                dir_votaciones.mkdir(parents=True, exist_ok=True)
+                
+                # 3. Guardamos el resultado dentro de esa nueva carpeta
+                ruta_salida_votaciones = dir_votaciones / f"votaciones_extraidas_{video_id}.json"
+                guardar_resultados(votaciones, ruta_salida_votaciones)
+                print(f"[+] ¡Éxito! {len(votaciones)} votaciones guardadas en: {ruta_salida_votaciones}")
+            else:
+                print("[-] No se detectaron votaciones en este vídeo.")
+        except Exception as e:
+            print(f"[!] Error extrayendo votaciones: {e}")
+        # =================================================================
+
         # 4. AVISO: Base de datos (95%)
         if callback_progreso:
             callback_progreso({"video_id": video_id, "progreso": 95, "estado": "Guardando información procesada en ChromaDB..."})
@@ -205,6 +232,6 @@ def ejecutar_pipeline_lote(lista_urls: list, callback_progreso=None):
 
 if __name__ == "__main__":
     mis_videos = [
-        "https://www.youtube.com/live/d5781XQ8l0s"
+        "https://www.youtube.com/watch?v=nb_elRRfpM4"
     ]
     ejecutar_pipeline_lote(mis_videos)
