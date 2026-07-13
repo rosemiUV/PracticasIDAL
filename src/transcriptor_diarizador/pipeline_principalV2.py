@@ -138,10 +138,10 @@ def ejecutar_pipeline_completo(url_video: str, callback_progreso=None):
             from src.motor_busqueda.pipeline_rag import generar_resumen, extraer_entidades
             from src.api.database import guardar_metadatos_video
             
-            print("Generando resumen...")
-            res_resumen = generar_resumen(video_id)
             print("Extrayendo entidades...")
             res_entidades = extraer_entidades(video_id)
+            print("Generando resumen...")
+            res_resumen = generar_resumen(video_id)
             
             guardar_metadatos_video(
                 video_id=video_id,

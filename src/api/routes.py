@@ -170,25 +170,30 @@ def get_summary(request: SummaryRequest):
     Devuelve un resumen global y el índice de temas para la sesión especificada.
     """
     from src.motor_busqueda.pipeline_rag import generar_resumen
-    from src.api.database import obtener_metadatos_video, guardar_metadatos_video
+    from src.motor_busqueda.db_neo4j import db
     
     try:
-        # 1. Intentar cargar desde la caché SQLite (Instantáneo)
-        metadatos = obtener_metadatos_video(request.video_id)
-        if metadatos and metadatos.get("resumen"):
-            print(f"Caché Hit: Resumen devuelto para {request.video_id}")
-            return {"video_id": request.video_id, "resumen": metadatos["resumen"], "error": None}
+        # 1. Intentar cargar desde Neo4j (Instantáneo)
+        query = "MATCH (v:Video {id: $video_id}) RETURN v.resumen AS resumen"
+        resultados = db.execute_query(query, {"video_id": request.video_id})
+        
+        if resultados and resultados[0]["resumen"]:
+            print(f"Neo4j Hit: Resumen devuelto para {request.video_id}")
+            return {"video_id": request.video_id, "resumen": resultados[0]["resumen"], "error": None}
 
         # 2. Fallback: Vídeo antiguo sin caché. Llamar al LLM al vuelo.
-        print(f"Caché Miss: Generando resumen para {request.video_id} al vuelo...")
+        print(f"Neo4j Miss: Generando resumen para {request.video_id} al vuelo...")
         resultado = generar_resumen(request.video_id)
         if resultado.get("error"):
             return {"error": resultado["error"]}
             
-        # Guardar en caché para la próxima vez
+        # Guardar en Neo4j para la próxima vez
         if not resultado.get("error"):
-            entidades_existentes = metadatos.get("entidades", []) if metadatos else []
-            guardar_metadatos_video(request.video_id, resultado["resumen"], entidades_existentes)
+            db.execute_write('''
+                MERGE (v:Video {id: $video_id})
+                ON CREATE SET v.resumen = $resumen
+                ON MATCH SET v.resumen = $resumen
+            ''', {"video_id": request.video_id, "resumen": resultado["resumen"]})
             
         return resultado
     except Exception as e:
@@ -198,35 +203,125 @@ def get_summary(request: SummaryRequest):
 @router.post('/entities')
 def get_entities(request: EntitiesRequest):
     """
-    Devuelve las entidades encontradas (Leyes y Personas) junto a un pequeño resumen de Wikipedia.
+    Devuelve las entidades vinculadas al vídeo (Leyes, Personas, etc.) directamente desde Neo4j.
     """
     from src.motor_busqueda.pipeline_rag import extraer_entidades
-    from src.api.database import obtener_metadatos_video, guardar_metadatos_video
+    from src.motor_busqueda.db_neo4j import db
     
     try:
-        # 1. Intentar cargar entidades globales desde la caché SQLite (Instantáneo)
+        # 1. Intentar cargar entidades desde Neo4j
         if not request.pregunta:
-            metadatos = obtener_metadatos_video(request.video_id)
-            if metadatos and metadatos.get("entidades"):
-                print(f"Caché Hit: Entidades devueltas para {request.video_id}")
-                return {"video_id": request.video_id, "entidades": metadatos["entidades"], "error": None}
+            query = """
+            MATCH (v:Video {id: $video_id})-[:MENCIONA]->(n)
+            RETURN n, labels(n) AS tipo
+            """
+            resultados = db.execute_query(query, {"video_id": request.video_id})
+            
+            if resultados:
+                print(f"Neo4j Hit: Entidades devueltas para {request.video_id}")
+                entidades_formateadas = []
+                for res in resultados:
+                    nodo = res["n"]
+                    tipo = res["tipo"][0]
+                    entidad = {
+                        "id": nodo.get("id"),
+                        "tipo": tipo.lower(),
+                        "nombre": nodo.get("nombre"),
+                        "url": nodo.get("url"),
+                        "fuente": nodo.get("fuente", "Desconocida")
+                    }
+                    if tipo == "Persona":
+                        entidad["explicacion"] = nodo.get('rol', 'Político.')
+                        entidad["foto_url"] = nodo.get("foto_url", f"https://ui-avatars.com/api/?name={nodo.get('nombre', 'X').replace(' ', '+')}&background=random")
+                    elif tipo == "Ley":
+                        entidad["explicacion"] = nodo.get("resumen", "")
+                        entidad["foto_url"] = "https://ui-avatars.com/api/?name=⚖️&background=fff3cd&color=856404"
+                    elif tipo == "Partido":
+                        entidad["explicacion"] = nodo.get("descripcion", "Partido u Organización.")
+                        entidad["tipo"] = "partido"
+                        entidad["foto_url"] = nodo.get("logo_url", f"https://ui-avatars.com/api/?name={nodo.get('nombre', 'P').replace(' ', '+')}&background=random")
+                    elif tipo == "Lugar":
+                        entidad["explicacion"] = nodo.get("descripcion", "")
+                        entidad["foto_url"] = "https://ui-avatars.com/api/?name=📍&background=cce5ff&color=004085"
+                    elif tipo == "Evento":
+                        entidad["explicacion"] = nodo.get("descripcion", "")
+                        entidad["tipo"] = "evento"
+                        entidad["foto_url"] = "https://ui-avatars.com/api/?name=📅&background=f8d7da&color=721c24"
+                    elif tipo == "Concepto":
+                        entidad["explicacion"] = nodo.get("descripcion", "")
+                        entidad["tipo"] = "concepto"
+                        entidad["foto_url"] = "https://ui-avatars.com/api/?name=💡&background=d1ecf1&color=0c5460"
+                        
+                    entidades_formateadas.append(entidad)
+                    
+                return {"video_id": request.video_id, "entidades": entidades_formateadas, "error": None}
 
         # 2. Fallback: Llamar a LLM y Wikipedia
-        print(f"Caché Miss o Búsqueda Específica: Extrayendo entidades para {request.video_id} al vuelo...")
-        resultado = extraer_entidades(request.video_id, pregunta=request.pregunta)
-        if resultado.get("error"):
-            return {"error": resultado["error"]}
-            
-        # Guardar en caché solo si es una extracción global (sin pregunta)
-        if not request.pregunta and not resultado.get("error"):
-            metadatos = obtener_metadatos_video(request.video_id)
-            resumen_existente = metadatos.get("resumen", "") if metadatos else ""
-            guardar_metadatos_video(request.video_id, resumen_existente, resultado["entidades"])
-            
-        return resultado
+        print(f"Neo4j Miss o Búsqueda Específica: Extrayendo entidades para {request.video_id} al vuelo...")
+        return extraer_entidades(request.video_id, request.pregunta, top_k=25)
     except Exception as e:
         print(f"Error extrayendo entidades: {e}")
         raise HTTPException(status_code=500, detail="Error extrayendo las entidades.")
+
+@router.get('/entidad/{entidad_id}')
+def get_entidad_por_id(entidad_id: str):
+    """
+    Busca una entidad en Neo4j por su ID y devuelve sus detalles para mostrar
+    en la tarjeta interactiva (HoverCard).
+    """
+    from src.motor_busqueda.db_neo4j import db
+    try:
+        # Buscamos en todas las etiquetas posibles
+        query = """
+        MATCH (n)
+        WHERE n.id = $id AND (n:Persona OR n:Partido OR n:Ley OR n:Lugar OR n:Evento OR n:Concepto)
+        RETURN n, labels(n) AS tipo
+        """
+        resultados = db.execute_query(query, {"id": entidad_id})
+        
+        if not resultados:
+            raise HTTPException(status_code=404, detail="Entidad no encontrada en el grafo")
+            
+        nodo = resultados[0]["n"]
+        tipo = resultados[0]["tipo"][0] # ej: 'Persona', 'Partido', 'Ley', 'Lugar', 'Evento', 'Concepto'
+        
+        respuesta = {
+            "id": nodo.get("id"),
+            "tipo": tipo,
+            "nombre": nodo.get("nombre"),
+            "url": nodo.get("url"),
+            "fuente": nodo.get("fuente", "Desconocida")
+        }
+        
+        if tipo == "Persona":
+            respuesta["rol"] = nodo.get("rol", "Cargo desconocido")
+            # Foto provisional
+            respuesta["foto_url"] = nodo.get("foto_url", "https://ui-avatars.com/api/?name=" + nodo.get("nombre", "X").replace(" ", "+") + "&background=random")
+            respuesta["descripcion"] = f"Político. {nodo.get('rol', '')}"
+            
+        elif tipo == "Partido":
+            respuesta["siglas"] = nodo.get("siglas", "")
+            respuesta["descripcion"] = nodo.get("descripcion", "Partido u Organización.")
+            respuesta["foto_url"] = nodo.get("logo_url", "https://ui-avatars.com/api/?name=" + nodo.get("siglas", "P").replace(" ", "+") + "&background=random")
+            
+        elif tipo == "Ley":
+            respuesta["descripcion"] = nodo.get("resumen", "Normativa o texto legal.")
+            
+        elif tipo == "Lugar":
+            respuesta["descripcion"] = nodo.get("descripcion", "Lugar geográfico.")
+            
+        elif tipo == "Evento":
+            respuesta["descripcion"] = nodo.get("descripcion", "Evento o suceso clave.")
+            
+        elif tipo == "Concepto":
+            respuesta["descripcion"] = nodo.get("descripcion", "Programa o concepto político.")
+            
+        return respuesta
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error buscando entidad en Neo4j: {e}")
+        raise HTTPException(status_code=500, detail="Error interno de base de datos.")
 
 @router.post('/stats')
 def get_stats(request: StatsRequest):

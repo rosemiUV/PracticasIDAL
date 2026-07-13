@@ -155,65 +155,123 @@ const YouTubeLoopPlayer = ({ url, inicio, fin, isActive }) => {
 
 // Las sesiones se cargarán ahora de forma dinámica desde el backend
 // Componente que resalta las entidades en un texto
-// Componente interno para resaltar entidades en texto plano
-const EntityText = ({ text, validEntities, setTooltipGlobal }) => {
-  if (!text) return null;
-  if (!validEntities || validEntities.length === 0) return <>{text}</>;
+// Componente que carga los datos de una entidad bajo demanda y la muestra como píldora interactiva
+const EntidadInteractiva = ({ idEntidad, textoOriginal, setTooltipGlobal }) => {
+  const [datos, setDatos] = useState(null);
 
-  const escapedNames = validEntities.map(e => e.nombre.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const regex = new RegExp(`(${escapedNames.join('|')})`, 'gi');
+  // Cargamos los datos de la API en cuanto se renderiza la etiqueta
+  useEffect(() => {
+    fetch(`${API_URL}/api/entidad/${idEntidad}`)
+      .then(res => res.json())
+      .then(d => setDatos(d))
+      .catch(() => {}); // Si falla, se queda en null
+  }, [idEntidad]);
 
-  const parts = text.split(regex);
+  const handleMouseEnter = (e) => {
+    const rect = e.target.getBoundingClientRect();
+    if (!datos) {
+      setTooltipGlobal({
+        visible: true, x: rect.left + rect.width / 2, y: rect.top,
+        title: "Cargando...", desc: "", icon: '⏳', foto: null
+      });
+      return;
+    }
+    
+    let icon = '📌';
+    if (datos.detail) icon = '❓';
+    else if (datos.tipo === 'Ley') icon = '⚖️';
+    else if (datos.tipo === 'Persona') icon = '👤';
+    else if (datos.tipo === 'Partido') icon = '🟣';
+    else if (datos.tipo === 'Institución' || datos.tipo === 'Institucion') icon = '🏛️';
+    else if (datos.tipo === 'Lugar') icon = '📍';
+    else if (datos.tipo === 'Evento') icon = '📅';
+    else if (datos.tipo === 'Concepto') icon = '💡';
+
+    setTooltipGlobal({
+      visible: true, x: rect.left + rect.width / 2, y: rect.top,
+      title: datos.detail ? "Entidad Desconocida" : datos.nombre,
+      desc: datos.detail ? "Esta entidad fue detectada por el LLM pero no se ha guardado en la base de datos." : datos.descripcion,
+      icon: icon,
+      foto: datos.foto_url,
+      fuente: datos.fuente,
+      tipo: datos.tipo
+    });
+  };
+
+  const handleMouseLeave = () => {
+    setTooltipGlobal(prev => ({ ...prev, visible: false }));
+  };
+
+  const handleClick = (e) => {
+    if (datos && datos.url) {
+      e.stopPropagation();
+      window.open(datos.url, '_blank');
+    }
+  };
+
+  const isLoaded = datos !== null;
+  let bgColor = 'bg-gray-100 text-gray-500 border-gray-300 animate-pulse';
+  if (isLoaded) {
+    if (datos.detail) bgColor = 'bg-gray-100 text-gray-400 border-gray-200 line-through';
+    else if (datos.tipo === 'Ley') bgColor = 'bg-amber-100 text-amber-800 border-amber-300';
+    else if (datos.tipo === 'Persona') bgColor = 'bg-emerald-100 text-emerald-800 border-emerald-300';
+    else if (datos.tipo === 'Partido') bgColor = 'bg-purple-100 text-purple-800 border-purple-300';
+    else if (datos.tipo === 'Institución' || datos.tipo === 'Institucion') bgColor = 'bg-indigo-100 text-indigo-800 border-indigo-300';
+    else if (datos.tipo === 'Lugar') bgColor = 'bg-blue-100 text-blue-800 border-blue-300';
+    else if (datos.tipo === 'Evento') bgColor = 'bg-red-100 text-red-800 border-red-300';
+    else if (datos.tipo === 'Concepto') bgColor = 'bg-teal-100 text-teal-800 border-teal-300';
+    else bgColor = 'bg-gray-100 text-gray-800 border-gray-300';
+  }
+
+  const clickableStyle = isLoaded && datos.url ? 'cursor-pointer hover:ring-2 hover:ring-offset-1 hover:ring-amber-400' : 'cursor-help';
 
   return (
-    <>
-      {parts.map((part, i) => {
-        const entityMatch = validEntities.find(e => e.nombre.toLowerCase() === part.toLowerCase());
-
-        if (entityMatch) {
-          const tipo = entityMatch.tipo;
-          let bgColor = 'bg-gray-100 text-gray-800 border-gray-300';
-          let icon = '📌';
-
-          if (tipo === 'ley') { bgColor = 'bg-amber-100 text-amber-800 border-amber-300'; icon = '⚖️'; }
-          else if (tipo === 'persona') { bgColor = 'bg-emerald-100 text-emerald-800 border-emerald-300'; icon = '👤'; }
-          else if (tipo === 'lugar') { bgColor = 'bg-blue-100 text-blue-800 border-blue-300'; icon = '📍'; }
-          else if (tipo === 'institucion') { bgColor = 'bg-purple-100 text-purple-800 border-purple-300'; icon = '🏛️'; }
-
-          return (
-            <span
-              key={i}
-              onMouseEnter={(e) => {
-                const rect = e.target.getBoundingClientRect();
-                setTooltipGlobal({
-                  visible: true,
-                  x: rect.left + rect.width / 2,
-                  y: rect.top, // lo pondremos encima
-                  title: tipo,
-                  desc: entityMatch.explicacion,
-                  icon: icon
-                });
-              }}
-              onMouseLeave={() => setTooltipGlobal(prev => ({ ...prev, visible: false }))}
-              className={`inline-flex items-center px-1.5 py-0 mx-0.5 rounded-md font-medium border cursor-help transition-all hover:shadow-md hover:-translate-y-0.5 relative ${bgColor}`}
-            >
-              {part}
-            </span>
-          );
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </>
+    <span
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      onClick={handleClick}
+      className={`inline-flex items-center px-1.5 py-0 mx-0.5 rounded-md font-medium border transition-all hover:shadow-md hover:-translate-y-0.5 relative ${bgColor} ${clickableStyle}`}
+      title={isLoaded && datos.url ? "Haz clic para ir al BOE / Enlace oficial" : undefined}
+    >
+      {isLoaded && datos.nombre ? datos.nombre : textoOriginal}
+    </span>
   );
 };
 
-// Componente que renderiza texto con formato Markdown básico y resalta entidades
+// Componente que renderiza texto con formato Markdown básico y extrae las etiquetas XML <entidad>
 const TextWithEntities = ({ text, entidadesList, setTooltipGlobal }) => {
   if (!text) return null;
 
-  // Filtramos las entidades válidas una sola vez
-  const validEntities = (entidadesList || []).filter(e => e.nombre && e.nombre.length > 2);
-  validEntities.sort((a, b) => b.nombre.length - a.nombre.length);
+  // Pasamos el texto primero por el parser de XML
+  const parseXML = (fragmentText, fragmentKey) => {
+    // Regex que atrapa <entidad id="X">Y</entidad>
+    const regex = /<entidad\s+id="([^"]+)">([\s\S]*?)<\/entidad>/g;
+    const result = [];
+    let lastIndex = 0;
+    let match;
+    let counter = 0;
+
+    while ((match = regex.exec(fragmentText)) !== null) {
+      if (match.index > lastIndex) {
+        result.push(<span key={`text-${fragmentKey}-${counter++}`}>{fragmentText.slice(lastIndex, match.index)}</span>);
+      }
+      const idEntidad = match[1];
+      const textoInterior = match[2];
+      result.push(
+        <EntidadInteractiva 
+          key={`ent-${fragmentKey}-${counter++}`} 
+          idEntidad={idEntidad} 
+          textoOriginal={textoInterior}
+          setTooltipGlobal={setTooltipGlobal}
+        />
+      );
+      lastIndex = regex.lastIndex;
+    }
+    if (lastIndex < fragmentText.length) {
+      result.push(<span key={`text-${fragmentKey}-${counter++}`}>{fragmentText.slice(lastIndex)}</span>);
+    }
+    return result;
+  };
 
   // Parseador inline para negrita y cursiva
   const parseInline = (line, lineKey) => {
@@ -223,39 +281,97 @@ const TextWithEntities = ({ text, entidadesList, setTooltipGlobal }) => {
         {parts.map((part, i) => {
           if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
             const inner = part.slice(2, -2);
-            return <strong key={i} className="font-bold text-[#1d1d1f]"><EntityText text={inner} validEntities={validEntities} setTooltipGlobal={setTooltipGlobal} /></strong>;
+            return <strong key={`strong-${i}`} className="font-bold text-[#1d1d1f]">{parseXML(inner, i)}</strong>;
           } else if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
             const inner = part.slice(1, -1);
-            return <em key={i} className="italic text-[#1d1d1f]/80"><EntityText text={inner} validEntities={validEntities} setTooltipGlobal={setTooltipGlobal} /></em>;
+            return <em key={`em-${i}`} className="italic text-[#1d1d1f]/80">{parseXML(inner, i)}</em>;
           } else {
-            return <EntityText key={i} text={part} validEntities={validEntities} setTooltipGlobal={setTooltipGlobal} />;
+            return <span key={`plain-${i}`}>{parseXML(part, i)}</span>;
           }
         })}
       </span>
     );
   };
 
-  // Pre-procesamos para arreglar viñetas "huerfanas" (ej: el LLM pone "•" y luego un salto de línea antes del texto)
+  // Pre-procesamos para arreglar viñetas "huerfanas"
   const cleanText = text.replace(/^(\s*[-*•+])\s*\n/gm, '$1 ');
-  const lines = cleanText.split('\n');
+  const rawLines = cleanText.split('\n');
+
+  // Agrupamos en bloques para poder parsear tablas correctamente
+  const blocks = [];
+  let currentTable = null;
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      if (!currentTable) currentTable = [];
+      // Ignoramos la fila de separación (ej. |---|---|)
+      if (!/^\|[\s\-:|]+\|$/.test(trimmed)) {
+        currentTable.push(line);
+      }
+    } else if (currentTable && trimmed === '') {
+      // Ignorar saltos de línea vacíos entre filas de tabla (común en respuestas del LLM)
+      continue;
+    } else {
+      if (currentTable) {
+        blocks.push({ type: 'table', rows: currentTable, idx: i });
+        currentTable = null;
+      }
+      blocks.push({ type: 'line', content: line, idx: i });
+    }
+  }
+  if (currentTable) {
+    blocks.push({ type: 'table', rows: currentTable, idx: rawLines.length });
+  }
 
   return (
-    <div className="flex flex-col gap-2">
-      {lines.map((line, idx) => {
+    <div className="flex flex-col gap-2 w-full overflow-hidden">
+      {blocks.map((block, idx) => {
+        if (block.type === 'table') {
+          // Si la tabla solo tiene 1 fila, es inválida, se pinta como texto
+          if (block.rows.length < 2) {
+            return <p key={`err-table-${idx}`} className="leading-relaxed">{parseInline(block.rows[0], idx)}</p>;
+          }
+          return (
+            <div key={`table-${idx}`} className="overflow-x-auto my-3 w-full border border-gray-200 rounded-xl shadow-sm bg-white">
+              <table className="w-full text-left text-sm border-collapse">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    {block.rows[0].split('|').filter((_, i, arr) => i > 0 && i < arr.length - 1).map((cell, i) => (
+                      <th key={`th-${i}`} className="px-4 py-3 font-semibold text-gray-700 bg-gray-50/80">{parseInline(cell.trim(), `th-in-${i}`)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {block.rows.slice(1).map((row, rIdx) => (
+                    <tr key={`tr-${rIdx}`} className="hover:bg-gray-50/50 transition-colors">
+                      {row.split('|').filter((_, i, arr) => i > 0 && i < arr.length - 1).map((cell, cIdx) => (
+                        <td key={`td-${cIdx}`} className="px-4 py-3 text-gray-600 align-top">{parseInline(cell.trim(), `td-in-${rIdx}-${cIdx}`)}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+
+        const line = block.content;
         const trimmed = line.trim();
 
-        if (trimmed === '---') {
-          return <hr key={idx} className="my-4 border-t border-gray-300" />;
-        }
+        if (trimmed === '') return null;
+        if (trimmed === '---') return <hr key={`hr-${block.idx}`} className="my-4 border-t border-gray-300" />;
 
         // Soportar desde 1 hasta 6 almohadillas para los títulos
         const headingMatch = line.match(/^(#{1,6})\s+(.*)/);
         if (headingMatch) {
           const level = headingMatch[1].length;
-          const content = parseInline(headingMatch[2], idx);
-          if (level <= 2) return <h2 key={idx} className="text-xl font-bold text-gray-900 mt-5 mb-2">{content}</h2>;
-          if (level === 3) return <h3 key={idx} className="text-lg font-bold text-gray-900 mt-4 mb-1">{content}</h3>;
-          return <h4 key={idx} className="text-md font-bold text-gray-900 mt-3 mb-1">{content}</h4>;
+          const content = parseInline(headingMatch[2], block.idx);
+          if (level <= 2) return <h2 key={`h2-${block.idx}`} className="text-xl font-bold text-gray-900 mt-5 mb-2">{content}</h2>;
+          if (level === 3) return <h3 key={`h3-${block.idx}`} className="text-lg font-bold text-gray-900 mt-4 mb-1">{content}</h3>;
+          return <h4 key={`h4-${block.idx}`} className="text-md font-bold text-gray-900 mt-3 mb-1">{content}</h4>;
         }
 
         // Soportar listas con -, *, • o +
@@ -263,19 +379,15 @@ const TextWithEntities = ({ text, entidadesList, setTooltipGlobal }) => {
         if (listMatch) {
           const isNested = listMatch[1].length > 0;
           return (
-            <div key={idx} className={`flex items-start ${isNested ? 'ml-6' : 'ml-2'} mt-1`}>
+             <div key={`list-${block.idx}`} className={`flex items-start ${isNested ? 'ml-6' : 'ml-2'} mt-1`}>
               <span className="text-blue-500 mr-2 font-bold">•</span>
-              <span className="flex-1">{parseInline(listMatch[3], idx)}</span>
+              <span className="flex-1">{parseInline(listMatch[3], block.idx)}</span>
             </div>
           );
         }
 
-        if (trimmed === '') {
-          return null;
-        }
-
         // Párrafo normal
-        return <p key={idx} className="leading-relaxed">{parseInline(line, idx)}</p>;
+        return <p key={`p-${block.idx}`} className="leading-relaxed">{parseInline(line, block.idx)}</p>;
       })}
     </div>
   );
@@ -322,8 +434,14 @@ const ResumenVisual = ({ texto, entidadesList, setTooltipGlobal }) => {
           <div className="flex flex-col gap-3">
             {temas.map((tema, idx) => (
               <div key={idx} className="bg-purple-50/50 p-4 rounded-2xl border border-purple-100/50 transition-all hover:bg-purple-50 hover:shadow-sm">
-                <h5 className="font-semibold text-[#1d1d1f] leading-tight mb-1">{tema.titulo}</h5>
-                {tema.desc && <p className="text-sm text-[#86868b] leading-relaxed">{tema.desc}</p>}
+                <h5 className="font-semibold text-[#1d1d1f] leading-tight mb-1">
+                  <TextWithEntities text={tema.titulo} entidadesList={entidadesList} setTooltipGlobal={setTooltipGlobal} />
+                </h5>
+                {tema.desc && (
+                  <p className="text-sm text-[#86868b] leading-relaxed">
+                    <TextWithEntities text={tema.desc} entidadesList={entidadesList} setTooltipGlobal={setTooltipGlobal} />
+                  </p>
+                )}
               </div>
             ))}
           </div>
@@ -542,9 +660,20 @@ function App() {
       }
     }
 
-    fetchResumen()
-    fetchEntidades()
-    fetchEstadisticas()
+    const cargarDatosSecuencialmente = async () => {
+      // 1. Estadísticas (pueden ir en paralelo)
+      fetchEstadisticas();
+      
+      // 2. Entidades PRIMERO (para que Neo4j se pueble)
+      await fetchEntidades();
+      
+      // 3. Resumen DESPUÉS (así el LLM conoce las entidades para etiquetarlas)
+      if (isMounted) {
+        await fetchResumen();
+      }
+    }
+
+    cargarDatosSecuencialmente()
 
     return () => {
       isMounted = false;
@@ -1344,9 +1473,14 @@ function App() {
                           <p className="text-sm text-gray-400 italic">No se detectaron personas.</p>
                         )}
                         {entidades.filter(e => e.tipo === 'persona').map((entidad, idx) => (
-                          <div key={idx} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                            <h5 className="font-bold text-gray-900 mb-2">{entidad.nombre}</h5>
-                            <p className="text-sm text-gray-600 leading-relaxed">{entidad.explicacion}</p>
+                          <div key={idx} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all hover:-translate-y-0.5 flex gap-4 items-start group">
+                            {entidad.foto_url && (
+                              <img src={entidad.foto_url} alt={entidad.nombre} className="w-14 h-14 rounded-full object-cover shadow-sm border border-emerald-50 flex-shrink-0 group-hover:scale-105 transition-transform" onError={(e) => { e.target.style.display = 'none' }} />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <h5 className="font-bold text-gray-900 mb-1 line-clamp-1">{entidad.nombre}</h5>
+                              <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">{entidad.explicacion}</p>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -1360,9 +1494,22 @@ function App() {
                           <p className="text-sm text-gray-400 italic">No se detectaron normativas.</p>
                         )}
                         {entidades.filter(e => e.tipo === 'ley').map((entidad, idx) => (
-                          <div key={idx} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                            <h5 className="font-bold text-gray-900 mb-2">{entidad.nombre}</h5>
-                            <p className="text-sm text-gray-600 leading-relaxed">{entidad.explicacion}</p>
+                          <div 
+                            key={idx} 
+                            onClick={() => entidad.url && window.open(entidad.url, '_blank')}
+                            className={`bg-white p-4 rounded-2xl border border-gray-100 shadow-sm transition-all flex gap-4 items-start group ${entidad.url ? 'cursor-pointer hover:shadow-md hover:border-amber-300 hover:-translate-y-0.5' : 'hover:shadow-md'}`}
+                            title={entidad.url ? "Haz clic para ver el texto oficial" : undefined}
+                          >
+                            {entidad.foto_url && (
+                              <img src={entidad.foto_url} alt="Ley" className="w-14 h-14 rounded-xl object-cover shadow-sm border border-amber-50 flex-shrink-0 group-hover:scale-105 transition-transform" onError={(e) => { e.target.style.display = 'none' }} />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <h5 className="font-bold text-gray-900 mb-1 flex items-center gap-2 flex-wrap">
+                                {entidad.nombre}
+                                {entidad.url && <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full border border-amber-200 group-hover:bg-amber-200 transition-colors whitespace-nowrap">Ver Oficial ↗</span>}
+                              </h5>
+                              <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">{entidad.explicacion}</p>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -1375,25 +1522,100 @@ function App() {
                           <p className="text-sm text-gray-400 italic">No se detectaron lugares.</p>
                         )}
                         {entidades.filter(e => e.tipo === 'lugar').map((entidad, idx) => (
-                          <div key={idx} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                            <h5 className="font-bold text-gray-900 mb-2">{entidad.nombre}</h5>
-                            <p className="text-sm text-gray-600 leading-relaxed">{entidad.explicacion}</p>
+                          <div key={idx} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all hover:-translate-y-0.5 flex gap-4 items-start group">
+                            {entidad.foto_url && (
+                              <img src={entidad.foto_url} alt="Lugar" className="w-14 h-14 rounded-xl object-cover shadow-sm border border-blue-50 flex-shrink-0 group-hover:scale-105 transition-transform" onError={(e) => { e.target.style.display = 'none' }} />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <h5 className="font-bold text-gray-900 mb-1 line-clamp-1">{entidad.nombre}</h5>
+                              <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">{entidad.explicacion}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* PARTIDOS POLÍTICOS */}
+                      <div className="flex flex-col gap-4">
+                        <h4 className="font-bold text-sm text-purple-700 uppercase tracking-widest flex items-center gap-2 border-b border-purple-100 pb-2">
+                          <span className="text-xl">🟣</span> Partidos Políticos
+                        </h4>
+                        {entidades.filter(e => e.tipo === 'partido').length === 0 && (
+                          <p className="text-sm text-gray-400 italic">No se detectaron partidos políticos.</p>
+                        )}
+                        {entidades.filter(e => e.tipo === 'partido').map((entidad, idx) => (
+                          <div key={idx} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all hover:-translate-y-0.5 flex gap-4 items-start group">
+                            {entidad.foto_url && (
+                              <div className="w-14 h-14 rounded-xl bg-white shadow-sm border border-purple-100 flex-shrink-0 flex items-center justify-center p-1 group-hover:scale-105 transition-transform overflow-hidden">
+                                <img src={entidad.foto_url} alt={entidad.nombre} className="w-full h-full object-contain" onError={(e) => { e.target.style.display = 'none' }} />
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <h5 className="font-bold text-gray-900 mb-1 line-clamp-1">{entidad.nombre}</h5>
+                              <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">{entidad.explicacion}</p>
+                            </div>
                           </div>
                         ))}
                       </div>
 
                       {/* INSTITUCIONES */}
                       <div className="flex flex-col gap-4">
-                        <h4 className="font-bold text-sm text-purple-700 uppercase tracking-widest flex items-center gap-2 border-b border-purple-100 pb-2">
+                        <h4 className="font-bold text-sm text-indigo-700 uppercase tracking-widest flex items-center gap-2 border-b border-indigo-100 pb-2">
                           <span className="text-xl">🏛️</span> Instituciones
                         </h4>
                         {entidades.filter(e => e.tipo === 'institucion').length === 0 && (
                           <p className="text-sm text-gray-400 italic">No se detectaron instituciones.</p>
                         )}
                         {entidades.filter(e => e.tipo === 'institucion').map((entidad, idx) => (
-                          <div key={idx} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                            <h5 className="font-bold text-gray-900 mb-2">{entidad.nombre}</h5>
-                            <p className="text-sm text-gray-600 leading-relaxed">{entidad.explicacion}</p>
+                          <div key={idx} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all hover:-translate-y-0.5 flex gap-4 items-start group">
+                            {entidad.foto_url && (
+                              <img src={entidad.foto_url} alt="Institución" className="w-14 h-14 rounded-xl object-cover shadow-sm border border-indigo-50 flex-shrink-0 group-hover:scale-105 transition-transform" onError={(e) => { e.target.style.display = 'none' }} />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <h5 className="font-bold text-gray-900 mb-1 line-clamp-1">{entidad.nombre}</h5>
+                              <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">{entidad.explicacion}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      
+                      {/* EVENTOS */}
+                      <div className="flex flex-col gap-4">
+                        <h4 className="font-bold text-sm text-red-700 uppercase tracking-widest flex items-center gap-2 border-b border-red-100 pb-2">
+                          <span className="text-xl">📅</span> Eventos y Sucesos
+                        </h4>
+                        {entidades.filter(e => e.tipo === 'evento').length === 0 && (
+                          <p className="text-sm text-gray-400 italic">No se detectaron eventos.</p>
+                        )}
+                        {entidades.filter(e => e.tipo === 'evento').map((entidad, idx) => (
+                          <div key={idx} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all hover:-translate-y-0.5 flex gap-4 items-start group">
+                            {entidad.foto_url && (
+                              <img src={entidad.foto_url} alt="Evento" className="w-14 h-14 rounded-xl object-cover shadow-sm border border-red-50 flex-shrink-0 group-hover:scale-105 transition-transform" onError={(e) => { e.target.style.display = 'none' }} />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <h5 className="font-bold text-gray-900 mb-1 line-clamp-1">{entidad.nombre}</h5>
+                              <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">{entidad.explicacion}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* CONCEPTOS */}
+                      <div className="flex flex-col gap-4">
+                        <h4 className="font-bold text-sm text-teal-700 uppercase tracking-widest flex items-center gap-2 border-b border-teal-100 pb-2">
+                          <span className="text-xl">💡</span> Programas y Conceptos
+                        </h4>
+                        {entidades.filter(e => e.tipo === 'concepto').length === 0 && (
+                          <p className="text-sm text-gray-400 italic">No se detectaron conceptos.</p>
+                        )}
+                        {entidades.filter(e => e.tipo === 'concepto').map((entidad, idx) => (
+                          <div key={idx} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all hover:-translate-y-0.5 flex gap-4 items-start group">
+                            {entidad.foto_url && (
+                              <img src={entidad.foto_url} alt="Concepto" className="w-14 h-14 rounded-xl object-cover shadow-sm border border-teal-50 flex-shrink-0 group-hover:scale-105 transition-transform" onError={(e) => { e.target.style.display = 'none' }} />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <h5 className="font-bold text-gray-900 mb-1 line-clamp-1">{entidad.nombre}</h5>
+                              <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">{entidad.explicacion}</p>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -1441,22 +1663,48 @@ function App() {
             </div>
           )}
 
-          {/* PORTAL TOOLTIP GLOBAL */}
+          {/* PORTAL TOOLTIP GLOBAL (NUEVO DISEÑO DE TARJETA) */}
           {tooltipGlobal.visible && (
             <div
-              className="fixed z-[9999] pointer-events-none transition-opacity duration-200"
+              className="fixed z-[9999] pointer-events-none transition-all duration-300 ease-out"
               style={{
                 left: `${tooltipGlobal.x}px`,
-                top: `${tooltipGlobal.y - 8}px`, // 8px de margen arriba
-                transform: 'translate(-50%, -100%)' // Centrado horizontalmente, justo encima
+                top: `${tooltipGlobal.y - 12}px`, // 12px de margen arriba
+                transform: 'translate(-50%, -100%)',
+                opacity: tooltipGlobal.visible ? 1 : 0
               }}
             >
-              <div className="w-64 p-3 bg-gray-900 text-white text-sm font-normal rounded-xl shadow-2xl leading-tight">
-                <div className="font-bold text-gray-200 mb-1 flex items-center gap-1 uppercase text-xs tracking-wider">
-                  {tooltipGlobal.icon} {tooltipGlobal.title}
+              <div className="w-80 bg-white border border-black/[0.08] shadow-[0_12px_40px_rgba(0,0,0,0.12)] rounded-2xl overflow-hidden flex flex-col">
+                <div className="flex">
+                  {tooltipGlobal.foto && (
+                    <div className="w-24 shrink-0 bg-gray-50 flex items-center justify-center p-2 border-r border-black/[0.04]">
+                      <img 
+                        src={tooltipGlobal.foto} 
+                        alt="" 
+                        className={`w-full rounded-xl shadow-sm ${tooltipGlobal.tipo && tooltipGlobal.tipo.toLowerCase() === 'partido' ? 'object-contain p-1' : 'object-cover'}`} 
+                        style={{ aspectRatio: '1/1' }}
+                        onError={(e) => { e.target.style.display = 'none' }}
+                      />
+                    </div>
+                  )}
+                  <div className="p-4 flex-1">
+                    <div className="font-bold text-[#1d1d1f] mb-1.5 flex items-center gap-1.5 leading-tight">
+                      <span className="text-lg">{tooltipGlobal.icon}</span> 
+                      <span className="line-clamp-2">{tooltipGlobal.title}</span>
+                    </div>
+                    <div className="text-sm text-[#86868b] leading-relaxed line-clamp-4">
+                      {tooltipGlobal.desc}
+                    </div>
+                  </div>
                 </div>
-                {tooltipGlobal.desc}
-                <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                {tooltipGlobal.fuente && (
+                  <div className="bg-[#f5f5f7] px-4 py-2 border-t border-black/[0.04] text-[10px] font-semibold text-[#86868b] tracking-wider uppercase flex items-center gap-1.5">
+                    <Info size={12} />
+                    Fuente: {tooltipGlobal.fuente}
+                  </div>
+                )}
+                {/* Flecha inferior */}
+                <div className="absolute top-full left-1/2 -translate-x-1/2 border-8 border-transparent border-t-white drop-shadow-sm"></div>
               </div>
             </div>
           )}
