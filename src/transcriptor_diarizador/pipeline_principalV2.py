@@ -55,6 +55,41 @@ def ejecutar_pipeline_completo(url_video: str, callback_progreso=None):
     ruta_script = Path(__file__).parent
     dir_data_root = ruta_script.parent.parent / "data"
     dir_audio = dir_data_root / "audios"
+    dir_final = dir_data_root / "resultados_finales"
+    
+    ruta_json_identificado = dir_final / f"datos_rag_{video_id}_identificado.json"
+    
+    # === COMPROBACIÓN DE VÍDEO YA PROCESADO ===
+    if ruta_json_identificado.exists():
+        print(f"\n[!] El vídeo {video_id} ya fue transcrito y procesado previamente. Saltando a la Fase 6...")
+        if callback_progreso:
+            callback_progreso({"video_id": video_id, "progreso": 98, "estado": "El vídeo ya existe, forzando Fase 6 (resumen y entidades)..."})
+        
+        # Ejecutar sólo la Fase 6 para guardar en BD
+        try:
+            from src.motor_busqueda.pipeline_rag import generar_resumen, extraer_entidades
+            from src.api.database import guardar_metadatos_video
+            
+            print("Extrayendo entidades...")
+            res_entidades = extraer_entidades(video_id)
+            print("Generando resumen...")
+            res_resumen = generar_resumen(video_id)
+            
+            guardar_metadatos_video(
+                video_id=video_id,
+                resumen=res_resumen.get("resumen", ""),
+                entidades=res_entidades.get("entidades", [])
+            )
+            print("Metadatos globales guardados en SQLite/Neo4j.")
+        except Exception as e:
+            print(f"Error calculando metadatos globales en Fase 6: {e}")
+
+        if callback_progreso:
+            callback_progreso({"video_id": video_id, "progreso": 100, "estado": "¡Procesamiento completado con éxito!"})
+            
+        print("\nPIPELINE COMPLETADO AL 100%.")
+        return video_id, str(ruta_json_identificado), titulo_real
+    # ==========================================
 
     # --- FASE 1: DESCARGA ---
     audio_temporal = descargar_audio_youtube(url_video, dir_audio)
