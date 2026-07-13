@@ -99,6 +99,13 @@ def _nombre_mostrar(meta: dict) -> str:
     if not nombre:
         nombre = meta.get("ponente", "Desconocido")
 
+    # Intentar resolver el nombre oficial usando CongresoAPI
+    if nombre and not nombre.startswith("SPEAKER_"):
+        from src.motor_busqueda.congreso_api import congreso_api
+        diputado = congreso_api.buscar_diputado(nombre)
+        if diputado:
+            nombre = diputado["nombre"]
+
     partido = meta.get("partido")
     if partido:
         return f"{nombre} ({partido})"
@@ -615,6 +622,10 @@ def buscar(pregunta: str, video_id: str) -> dict:
     # 5. Armar la lista de mensajes (historial + pregunta nueva)
     mensajes = historial_previo + [{"role": "user", "content": mensaje_usuario}]
 
+    # Inyectar entidades conocidas para auto-etiquetado XML
+    from src.motor_busqueda.db_neo4j import get_all_entities_for_prompt
+    texto_entidades = get_all_entities_for_prompt()
+
     system = (
         "Eres un asistente especializado en sesiones parlamentarias españolas. "
         "Responde ÚNICAMENTE con información que esté en los fragmentos proporcionados; "
@@ -637,7 +648,13 @@ def buscar(pregunta: str, video_id: str) -> dict:
         "- SÉ CONCISO: responde de forma directa, sin relleno ni repetir la pregunta. Para preguntas "
         "simples, 2-4 párrafos suelen bastar; reserva las respuestas más largas y estructuradas para "
         "preguntas con varios aspectos o posturas distintas.\n"
-        "- Puedes usar el historial de la conversación para dar respuestas de seguimiento coherentes."
+        "- Puedes usar el historial de la conversación para dar respuestas de seguimiento coherentes.\n\n"
+        "INSTRUCCIÓN MUY IMPORTANTE (AUTO-ETIQUETADO XML):\n"
+        "Cuando menciones a alguna de las personas, partidos, leyes, eventos o conceptos listados abajo en tu respuesta, "
+        "DEBES envolver su nombre en una etiqueta XML <entidad id=\"...\">nombre</entidad> usando el ID "
+        "exacto que se te proporciona. Esto es vital para el frontend. Solo hazlo con las entidades que "
+        "aparezcan en esta lista. Si una entidad sale varias veces, etiquétala todas las veces.\n\n"
+        f"{texto_entidades}"
     )
 
     # 6. Llamar a Mistral
@@ -656,7 +673,9 @@ def buscar(pregunta: str, video_id: str) -> dict:
         fuente = {**meta}  # Incluimos todos los metadatos (nombre, partido, confianza_id, etc.)
         
         # Añadimos y formateamos los campos específicos que espera el frontend
-        fuente["ponente"] = _nombre_mostrar(meta)
+        ponente_mostrado = _nombre_mostrar(meta)
+        fuente["ponente"] = ponente_mostrado
+        fuente["nombre"] = ponente_mostrado.split(' (')[0]
         fuente["texto"] = doc
         fuente["enlace_video"] = meta.get("url_exacta_tiempo", "")
         # Guardamos el formato en minutos:segundos, manteniendo los originales como floats en la copia de meta
@@ -711,6 +730,9 @@ def generar_resumen(video_id: str, n_fragmentos: int = 40) -> dict:
 
     contexto = _construir_contexto(documentos, metadatos)
 
+    from src.motor_busqueda.db_neo4j import get_all_entities_for_prompt
+    texto_entidades = get_all_entities_for_prompt()
+
     system = (
         "Eres un asistente especializado en sesiones parlamentarias españolas. "
         "Tu tarea es hacer un resumen claro, organizado y FIEL AL TEXTO ORIGINAL. "
@@ -720,7 +742,13 @@ def generar_resumen(video_id: str, n_fragmentos: int = 40) -> dict:
         "Cada fragmento del contexto empieza con la identificación exacta de quien habla "
         "(su nombre real, o un código como 'SPEAKER_XX' cuando el sistema no pudo reconocer su "
         "identidad). Cuando cites a un ponente, copia siempre esa identificación tal cual "
-        "aparece, letra por letra."
+        "aparece, letra por letra.\n\n"
+        "INSTRUCCIÓN MUY IMPORTANTE (AUTO-ETIQUETADO XML):\n"
+        "Cuando menciones a alguna de las personas, partidos, leyes, eventos o conceptos listados abajo en tu respuesta, "
+        "DEBES envolver su nombre en una etiqueta XML <entidad id=\"...\">nombre</entidad> usando el ID "
+        "exacto que se te proporciona. Esto es vital para el frontend. Solo hazlo con las entidades que "
+        "aparezcan en esta lista. Si una entidad sale varias veces, etiquétala todas las veces.\n\n"
+        f"{texto_entidades}"
     )
 
     mensaje = (
@@ -757,11 +785,11 @@ def generar_resumen(video_id: str, n_fragmentos: int = 40) -> dict:
 # FUNCIÓN 3: EXTRACCIÓN DE ENTIDADES CON BÚSQUEDA WEB
 # ─────────────────────────────────────────────────────────────
 
-def _buscar_wikipedia(termino: str) -> str:
+def _buscar_wikipedia(termino: str) -> tuple[str, str]:
     """
-    Busca un término en Wikipedia en español y devuelve el primer párrafo.
+    Busca un término en Wikipedia en español y devuelve el primer párrafo y la URL de la foto principal.
     No necesita API key, usa la API pública gratuita de Wikipedia.
-    Devuelve cadena vacía si no encuentra nada.
+    Devuelve (extracto, foto_url).
     """
     try:
         termino_codificado = urllib.parse.quote(termino)
@@ -769,9 +797,15 @@ def _buscar_wikipedia(termino: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": "ParlamentoChatbot/1.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             datos = json.loads(resp.read().decode("utf-8"))
-            return datos.get("extract", "")
+            extracto = datos.get("extract", "")
+            foto = ""
+            if "thumbnail" in datos and "source" in datos["thumbnail"]:
+                foto = datos["thumbnail"]["source"]
+            elif "originalimage" in datos and "source" in datos["originalimage"]:
+                foto = datos["originalimage"]["source"]
+            return extracto, foto
     except Exception:
-        return ""
+        return "", ""
 
 
 def _detectar_entidades_con_llm(texto: str) -> dict:
@@ -798,38 +832,48 @@ def _detectar_entidades_con_llm(texto: str) -> dict:
         "Incluye el nombre completo si aparece (ej: 'Ley Orgánica 3/2007').\n"
         "2. LUGARES: países, comunidades autónomas, ciudades o pueblos mencionados "
         "(ej: 'Cataluña', 'Francia', 'Sevilla', 'Vitoria-Gasteiz').\n"
-        "3. INSTITUCIONES: organismos, ministerios, partidos políticos, tribunales u "
+        "3. INSTITUCIONES: organismos, ministerios, tribunales u "
         "otras instituciones mencionadas "
-        "(ej: 'Tribunal Constitucional', 'Ministerio de Hacienda', 'Partido Popular').\n\n"
+        "(ej: 'Tribunal Constitucional', 'Ministerio de Hacienda').\n"
+        "4. PARTIDOS: partidos políticos o coaliciones mencionadas explícitamente "
+        "(ej: 'Partido Popular', 'PSOE', 'Sumar', 'Junts'). Para cada partido, "
+        "intenta extraer su nombre completo y sus posibles alias o siglas (ej: 'PP', 'Grupo Popular').\n"
+        "5. EVENTOS: sucesos históricos, crisis, escándalos o hitos temporales mencionados "
+        "(ej: 'La pandemia', 'El 11-M', 'Guerra civil', 'La crisis de 2008').\n"
+        "6. CONCEPTOS: programas políticos, fondos, o abstracciones clave mencionadas "
+        "(ej: 'Fondos europeos', 'Agenda 2030', 'Amnistía', 'Estado de bienestar').\n\n"
         "Devuelve SOLO este JSON (sin nada más):\n"
         '{"leyes": ["nombre completo ley 1", "..."], '
         '"lugares": ["Lugar 1", "..."], '
-        '"instituciones": ["Institución 1", "..."]}'
+        '"instituciones": ["Institución 1", "..."], '
+        '"partidos": [{"nombre": "Partido Popular", "alias": ["PP", "Grupo Popular"]}], '
+        '"eventos": ["Evento 1", "..."], '
+        '"conceptos": ["Concepto 1", "..."]}'
     )
     try:
         respuesta = _llamar_groq(system, [{"role": "user", "content": mensaje}])
         respuesta_limpia = respuesta.strip().strip("```json").strip("```").strip()
         return json.loads(respuesta_limpia)
     except Exception:
-        return {"leyes": [], "lugares": [], "instituciones": []}
+        return {"leyes": [], "lugares": [], "instituciones": [], "partidos": [], "eventos": [], "conceptos": []}
 
 
-def _resolver_nombre_wikipedia(nombre: str, tipo: str) -> str:
+def _resolver_nombre_wikipedia(nombre: str, tipo: str) -> tuple[str, str]:
     """
     Intenta encontrar el término exacto que Wikipedia reconoce.
     Primero prueba el nombre tal cual. Si no funciona, prueba variantes.
-    Devuelve el texto de Wikipedia o cadena vacía.
+    Devuelve (texto_wikipedia, foto_url).
     """
     # Intento 1: nombre tal cual
-    resultado = _buscar_wikipedia(nombre)
-    if resultado and len(resultado) > 50:
-        return resultado
+    extracto, foto = _buscar_wikipedia(nombre)
+    if extracto and len(extracto) > 50:
+        return extracto, foto
 
     # Intento 2: si es persona, probar "Nombre Apellido (político)"
     if tipo == "persona":
-        resultado = _buscar_wikipedia(f"{nombre} (político)")
-        if resultado and len(resultado) > 50:
-            return resultado
+        extracto, foto = _buscar_wikipedia(f"{nombre} (político)")
+        if extracto and len(extracto) > 50:
+            return extracto, foto
 
     # Intento 3: preguntar a Mistral cuál es el título exacto del artículo de Wikipedia
     system = (
@@ -851,13 +895,13 @@ def _resolver_nombre_wikipedia(nombre: str, tipo: str) -> str:
     try:
         titulo_wikipedia = _llamar_groq(system, [{"role": "user", "content": mensaje}])
         titulo_limpio = titulo_wikipedia.strip().strip('"').strip("'")
-        resultado = _buscar_wikipedia(titulo_limpio)
-        if resultado and len(resultado) > 50:
-            return resultado
+        extracto, foto = _buscar_wikipedia(titulo_limpio)
+        if extracto and len(extracto) > 50:
+            return extracto, foto
     except Exception:
         pass
 
-    return ""
+    return "", ""
 
 
 def _extraer_personas_de_metadatos(metadatos: list) -> list[dict]:
@@ -885,7 +929,7 @@ def _extraer_personas_de_metadatos(metadatos: list) -> list[dict]:
     return list(vistos.values())
 
 
-def _explicar_entidad(nombre: str, tipo: str, partido: str = None) -> str:
+def _explicar_entidad(nombre: str, tipo: str, partido: str = None) -> tuple[str, str, str, str]:
     """
     Busca información en Wikipedia y usa Mistral para generar una explicación breve.
     tipo puede ser "ley", "lugar", "institucion" o "persona".
@@ -893,13 +937,27 @@ def _explicar_entidad(nombre: str, tipo: str, partido: str = None) -> str:
     Si ya conocemos el partido de la persona (porque viene de los metadatos
     identificados, ver _extraer_personas_de_metadatos), se lo pasamos al LLM
     directamente en vez de dejar que tenga que deducirlo o alucinarlo.
+    
+    Devuelve (explicacion, foto_url, fuente_origen).
     """
-    info_wikipedia = _resolver_nombre_wikipedia(nombre, tipo)
+    if tipo == "persona":
+        from src.motor_busqueda.congreso_api import congreso_api
+        diputado = congreso_api.buscar_diputado(nombre)
+        if diputado:
+            explicacion = diputado.get("biografia", "")
+            foto_url = diputado.get("foto_url", "")
+            fuente_origen = "Congreso de los Diputados"
+            return explicacion, foto_url, fuente_origen, diputado["nombre"]
+
+    info_wikipedia, foto_url = _resolver_nombre_wikipedia(nombre, tipo)
+
 
     if info_wikipedia:
         fuente = f"Información de Wikipedia:\n{info_wikipedia[:1500]}"
+        fuente_origen = "Wikipedia"
     else:
-        fuente = "No se encontró información en Wikipedia."
+        fuente = "No se encontró información ni en Wikipedia ni mediante LLM."
+        fuente_origen = "No encontrada"
 
     if tipo == "ley":
         instruccion = (
@@ -913,10 +971,22 @@ def _explicar_entidad(nombre: str, tipo: str, partido: str = None) -> str:
             "y por qué es relevante en el contexto de la política española. "
             "Sé directo y claro."
         )
-    elif tipo == "institucion":
+    elif tipo == "institucion" or tipo == "partido":
         instruccion = (
             f"Explica en 2-3 frases qué es '{nombre}': "
-            "qué función tiene y por qué aparece en debates parlamentarios. "
+            "qué función o ideología tiene y por qué aparece en debates parlamentarios. "
+            "Sé directo y claro."
+        )
+    elif tipo == "evento":
+        instruccion = (
+            f"Explica en 2-3 frases qué fue el evento '{nombre}', "
+            "cuándo ocurrió y por qué es relevante en la política o historia de España. "
+            "Sé directo y objetivo."
+        )
+    elif tipo == "concepto":
+        instruccion = (
+            f"Explica en 2-3 frases qué significa el concepto, programa o término '{nombre}' "
+            "en el contexto político actual español. "
             "Sé directo y claro."
         )
     else:
@@ -928,13 +998,22 @@ def _explicar_entidad(nombre: str, tipo: str, partido: str = None) -> str:
             "Sé directo y objetivo."
         )
 
-    system = "Eres un asistente que explica términos políticos y jurídicos de forma sencilla."
-    mensaje = f"{instruccion}\n\n{fuente}"
-
+    system = "Eres un asistente que explica términos políticos y jurídicos de forma sencilla, neutra y enciclopédica."
+    prompt = (
+        f"{instruccion}\n"
+        f"{fuente}\n\n"
+        "REGLA MUY IMPORTANTE: Si la fuente no te da información y tú tampoco sabes con seguridad "
+        "quién o qué es esta entidad, debes responder ÚNICAMENTE con la frase exacta: "
+        "'Entidad mencionada en la sesión (información adicional no disponible).' "
+        "Bajo NINGÚN concepto pidas disculpas, no des consejos de cómo buscar, ni expliques por qué no lo sabes. "
+        "Si sí lo sabes, responde solo con la explicación directa, sin introducciones conversacionales ni saludos."
+    )
     try:
-        return _llamar_groq(system, [{"role": "user", "content": mensaje}])
+        explicacion = _llamar_groq(system, [{"role": "user", "content": prompt}])
+        return explicacion, foto_url, fuente_origen, nombre
     except Exception:
-        return info_wikipedia[:300] if info_wikipedia else "No se pudo obtener información."
+        explicacion_fallback = info_wikipedia[:300] if info_wikipedia else "No se pudo obtener información."
+        return explicacion_fallback, foto_url, fuente_origen, nombre
 
 
 def extraer_entidades(video_id: str, pregunta: str = "", top_k: int = 10) -> dict:
@@ -970,55 +1049,201 @@ def extraer_entidades(video_id: str, pregunta: str = "", top_k: int = 10) -> dic
                 "error":     f"No se encontraron fragmentos para el video '{video_id}'."
             }
 
+        from src.motor_busqueda.db_neo4j import guardar_entidad_dinamica, obtener_entidad_existente
+
         # PERSONAS: se sacan directamente de los metadatos (nombre + partido ya
         # identificados por diarización), NO se le pide al LLM que las adivine.
         personas = _extraer_personas_de_metadatos(metadatos)
+        
+        # Diccionario temporal para guardar las equivalencias nombre_original -> nombre_oficial
+        mapeo_nombres = {}
+        entidades = []
+
+        for persona in personas:
+            # Identificar nombre oficial para corrección en frontend
+            nombre_original = persona["nombre"]
+            nombre_oficial = nombre_original
+            
+            existente = obtener_entidad_existente(nombre_original, "persona")
+            if existente and existente.get("explicacion"):
+                explicacion = existente["explicacion"]
+                foto_url = existente["foto_url"]
+                fuente_origen = existente.get("fuente", "Caché Neo4j")
+                nombre_oficial = existente.get("nombre", nombre_original)
+            else:
+                explicacion, foto_url, fuente_origen, nombre_oficial = _explicar_entidad(
+                    nombre_original, "persona", partido=persona.get("partido")
+                )
+                
+            # Guardar en Neo4j usando el nombre OFICIAL para no ensuciar el grafo con alucinaciones
+            id_entidad = guardar_entidad_dinamica(nombre_oficial, "persona", explicacion, foto_url=foto_url, partido=persona.get("partido"), video_id=video_id, fuente=fuente_origen)
+            
+            entidades.append({
+                "id":          id_entidad,
+                "nombre":      nombre_oficial,
+                "tipo":        "persona",
+                "explicacion": explicacion
+            })
+            
+            if nombre_original != nombre_oficial:
+                mapeo_nombres[nombre_original] = nombre_oficial
 
         # LEYES, LUGARES E INSTITUCIONES: esto sí sigue necesitando al LLM,
         # porque esa información no viene en los metadatos.
         texto_completo = " ".join(documentos)
-        detectadas = _detectar_entidades_con_llm(texto_completo)
+        
+        # Para evitar el error HTTP 413 (Payload Too Large) de Groq al pedir top_k altos,
+        # dividimos el texto si es muy largo y combinamos los resultados.
+        max_chars = 15000
+        detectadas = {"leyes": [], "lugares": [], "instituciones": [], "partidos": [], "eventos": [], "conceptos": []}
+        
+        for i in range(0, len(texto_completo), max_chars):
+            segmento = texto_completo[i:i+max_chars]
+            try:
+                res_segmento = _detectar_entidades_con_llm(segmento)
+                for k in detectadas.keys():
+                    if k in res_segmento:
+                        # Los partidos son dicts ({"nombre":..., "alias":...}), el resto son strings
+                        if k == "partidos":
+                            nombres_existentes = [p["nombre"] if isinstance(p, dict) else p for p in detectadas[k]]
+                            for p in res_segmento[k]:
+                                p_nombre = p["nombre"] if isinstance(p, dict) else p
+                                if p_nombre not in nombres_existentes:
+                                    detectadas[k].append(p)
+                        else:
+                            for item in res_segmento[k]:
+                                if item not in detectadas[k]:
+                                    detectadas[k].append(item)
+            except Exception as e:
+                print(f"Error procesando segmento para entidades: {e}")
 
         leyes         = detectadas.get("leyes", [])
         lugares       = detectadas.get("lugares", [])
         instituciones = detectadas.get("instituciones", [])
+        partidos      = detectadas.get("partidos", [])
+        eventos       = detectadas.get("eventos", [])
+        conceptos     = detectadas.get("conceptos", [])
 
-        entidades = []
+
 
         for ley in leyes:
             if not ley or len(ley) < 3:
                 continue
+            existente = obtener_entidad_existente(ley, "ley")
+            if existente and existente.get("explicacion"):
+                explicacion = existente["explicacion"]
+                foto_url = existente["foto_url"]
+                fuente_origen = existente.get("fuente", "Caché Neo4j")
+            else:
+                explicacion, foto_url, fuente_origen, _ = _explicar_entidad(ley, "ley")
+            id_entidad = guardar_entidad_dinamica(ley, "ley", explicacion, foto_url=foto_url, video_id=video_id, fuente=fuente_origen)
             entidades.append({
+                "id":          id_entidad,
                 "nombre":      ley,
                 "tipo":        "ley",
-                "explicacion": _explicar_entidad(ley, "ley")
+                "explicacion": explicacion
             })
 
-        for persona in personas:
-            entidades.append({
-                "nombre":      persona["nombre"],
-                "tipo":        "persona",
-                "explicacion": _explicar_entidad(
-                    persona["nombre"], "persona", partido=persona.get("partido")
-                )
-            })
+
 
         for lugar in lugares:
             if not lugar or len(lugar) < 3:
                 continue
+            existente = obtener_entidad_existente(lugar, "lugar")
+            if existente and existente.get("explicacion"):
+                explicacion = existente["explicacion"]
+                foto_url = existente["foto_url"]
+                fuente_origen = existente.get("fuente", "Caché Neo4j")
+            else:
+                explicacion, foto_url, fuente_origen, _ = _explicar_entidad(lugar, "lugar")
+            id_entidad = guardar_entidad_dinamica(lugar, "lugar", explicacion, foto_url=foto_url, video_id=video_id, fuente=fuente_origen)
             entidades.append({
+                "id":          id_entidad,
                 "nombre":      lugar,
                 "tipo":        "lugar",
-                "explicacion": _explicar_entidad(lugar, "lugar")
+                "explicacion": explicacion
             })
 
         for institucion in instituciones:
             if not institucion or len(institucion) < 3:
                 continue
+            existente = obtener_entidad_existente(institucion, "institucion")
+            if existente and existente.get("explicacion"):
+                explicacion = existente["explicacion"]
+                foto_url = existente["foto_url"]
+                fuente_origen = existente.get("fuente", "Caché Neo4j")
+            else:
+                explicacion, foto_url, fuente_origen, _ = _explicar_entidad(institucion, "institucion")
+            id_entidad = guardar_entidad_dinamica(institucion, "institucion", explicacion, foto_url=foto_url, video_id=video_id, fuente=fuente_origen)
             entidades.append({
+                "id":          id_entidad,
                 "nombre":      institucion,
                 "tipo":        "institucion",
-                "explicacion": _explicar_entidad(institucion, "institucion")
+                "explicacion": explicacion
+            })
+
+        for partido_obj in partidos:
+            if isinstance(partido_obj, dict):
+                partido_nombre = partido_obj.get("nombre")
+                alias_list = partido_obj.get("alias", [])
+            else:
+                partido_nombre = partido_obj
+                alias_list = []
+                
+            if not partido_nombre or len(partido_nombre) < 2:
+                continue
+                
+            existente = obtener_entidad_existente(partido_nombre, "partido")
+            if existente and existente.get("explicacion"):
+                explicacion = existente["explicacion"]
+                foto_url = existente["foto_url"]
+                fuente_origen = existente.get("fuente", "Caché Neo4j")
+            else:
+                explicacion, foto_url, fuente_origen, _ = _explicar_entidad(partido_nombre, "partido")
+                
+            alias_str = ", ".join(alias_list) if alias_list else None
+            id_entidad = guardar_entidad_dinamica(partido_nombre, "partido", explicacion, foto_url=foto_url, video_id=video_id, alias=alias_str, fuente=fuente_origen)
+            entidades.append({
+                "id":          id_entidad,
+                "nombre":      partido_nombre,
+                "tipo":        "partido",
+                "explicacion": explicacion
+            })
+
+        for evento in eventos:
+            if not evento or len(evento) < 3:
+                continue
+            existente = obtener_entidad_existente(evento, "evento")
+            if existente and existente.get("explicacion"):
+                explicacion = existente["explicacion"]
+                foto_url = existente["foto_url"]
+                fuente_origen = existente.get("fuente", "Caché Neo4j")
+            else:
+                explicacion, foto_url, fuente_origen, _ = _explicar_entidad(evento, "evento")
+            id_entidad = guardar_entidad_dinamica(evento, "evento", explicacion, foto_url=foto_url, video_id=video_id, fuente=fuente_origen)
+            entidades.append({
+                "id":          id_entidad,
+                "nombre":      evento,
+                "tipo":        "evento",
+                "explicacion": explicacion
+            })
+
+        for concepto in conceptos:
+            if not concepto or len(concepto) < 3:
+                continue
+            existente = obtener_entidad_existente(concepto, "concepto")
+            if existente and existente.get("explicacion"):
+                explicacion = existente["explicacion"]
+                foto_url = existente.get("foto_url", "")
+                fuente_origen = existente.get("fuente", "Caché Neo4j")
+            else:
+                explicacion, foto_url, fuente_origen, _ = _explicar_entidad(concepto, "concepto")
+            id_entidad = guardar_entidad_dinamica(concepto, "concepto", explicacion, video_id=video_id, foto_url=foto_url, fuente=fuente_origen)
+            entidades.append({
+                "id":          id_entidad,
+                "nombre":      concepto,
+                "tipo":        "concepto",
+                "explicacion": explicacion
             })
 
         return {"video_id": video_id, "entidades": entidades, "error": None}
@@ -1281,6 +1506,10 @@ def buscar_transversal(pregunta: str, partido: str = None, top_k: int = TOP_K_TR
 
     mensajes = historial_previo + [{"role": "user", "content": mensaje_usuario}]
 
+    # Inyectar entidades conocidas para auto-etiquetado XML
+    from src.motor_busqueda.db_neo4j import get_all_entities_for_prompt
+    texto_entidades = get_all_entities_for_prompt()
+
     system = (
         "Eres un asistente especializado en sesiones parlamentarias españolas. "
         "Responde ÚNICAMENTE con información que esté en los fragmentos proporcionados; "
@@ -1297,7 +1526,13 @@ def buscar_transversal(pregunta: str, partido: str = None, top_k: int = TOP_K_TR
         "'apoya' o 'está de acuerdo con' algo solo porque otro ponente lo mencionó.\n"
         "- SÉ CONCISO pero completo: estructura la respuesta por sesión o por postura cuando "
         "haya varios aspectos distintos, en vez de un único párrafo genérico.\n"
-        "- Puedes usar el historial de la conversación para dar respuestas de seguimiento coherentes."
+        "- Puedes usar el historial de la conversación para dar respuestas de seguimiento coherentes.\n\n"
+        "INSTRUCCIÓN MUY IMPORTANTE (AUTO-ETIQUETADO XML):\n"
+        "Cuando menciones a alguna de las personas, partidos, leyes, eventos o conceptos listados abajo en tu respuesta, "
+        "DEBES envolver su nombre en una etiqueta XML <entidad id=\"...\">nombre</entidad> usando el ID "
+        "exacto que se te proporciona. Esto es vital para el frontend. Solo hazlo con las entidades que "
+        "aparezcan en esta lista. Si una entidad sale varias veces, etiquétala todas las veces.\n\n"
+        f"{texto_entidades}"
     )
 
     # 6. Llamar a Mistral
@@ -1314,7 +1549,9 @@ def buscar_transversal(pregunta: str, partido: str = None, top_k: int = TOP_K_TR
     fuentes_top_k = []
     for doc, meta in zip(documentos, metadatos):
         fuente = {**meta}
-        fuente["ponente"] = _nombre_mostrar(meta)
+        ponente_mostrado = _nombre_mostrar(meta)
+        fuente["ponente"] = ponente_mostrado
+        fuente["nombre"] = ponente_mostrado.split(' (')[0]
         fuente["texto"] = doc
         fuente["enlace_video"] = meta.get("url_exacta_tiempo", "")
         fuente["inicio_str"] = _segundos_a_mmss(meta["inicio"])
