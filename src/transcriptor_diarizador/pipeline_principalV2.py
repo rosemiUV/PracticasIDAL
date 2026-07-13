@@ -8,7 +8,7 @@ warnings.filterwarnings("ignore")
 # Rutas absolutas corregidas para que funcione perfectamente con 'python -m'
 from src.transcriptor_diarizador.procesador import configurar_ffmpeg_local, descargar_audio_youtube, transcribir_y_diarizar
 from src.transcriptor_diarizador.fusionador_pruebaV2 import fusionar_datos_para_rag
-from src.transcriptor_diarizador.identificador_speakers_v5 import identificar_video
+from src.transcriptor_diarizador.identificador_comisiones import identificar_video_auto
 from src.transcriptor_diarizador.cargador_chroma import subir_datos_a_chroma
 from src.transcriptor_diarizador.extractor_votaciones import procesar_archivo, guardar_resultados
 
@@ -145,10 +145,10 @@ def ejecutar_pipeline_completo(url_video: str, callback_progreso=None):
 
         # --- FASE 4b: IDENTIFICACIÓN DE SPEAKERS ---
         print("\n--- FASE 4b: IDENTIFICACIÓN DE SPEAKERS ---")
-        ruta_json_identificado = identificar_video(
+        ruta_json_identificado = identificar_video_auto(
             ruta_json_entrada=ruta_json_final,
             usar_llm=True,
-        )
+            )
         print(f"Speakers identificados — JSON final: {ruta_json_identificado}")
 
         # El JSON identificado es el que se sube a ChromaDB de aquí en adelante
