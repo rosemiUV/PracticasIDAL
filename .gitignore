@@ -61,3 +61,6 @@ venv/
 # Generated Data
 data/
 *.part
+
+# ChromaDB local (no debe compartirse entre desarrolladores)
+chroma_db_local/

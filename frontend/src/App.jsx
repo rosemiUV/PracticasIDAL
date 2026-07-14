@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import { Search, PlayCircle, ArrowLeft, Loader2, Video, Clock, ChevronRight, Info, Sparkles, X, Users, BarChart2 } from 'lucide-react'
+import { Search, PlayCircle, ArrowLeft, Loader2, Video, Clock, ChevronRight, Info, Sparkles, X, Users, BarChart2, Vote } from 'lucide-react'
 import DashboardEstadisticas, { MAPA_COLORES } from './DashboardEstadisticas'
+import DashboardVotaciones from './DashboardVotaciones'
 
 // Error boundary para evitar pantallas blancas fatales
 import React from 'react';
@@ -573,6 +574,11 @@ function App() {
   const [cargandoEstadisticas, setCargandoEstadisticas] = useState(false)
   const [mostrarEstadisticas, setMostrarEstadisticas] = useState(false)
 
+  // === VOTACIONES ===
+  const [votaciones, setVotaciones] = useState(null)
+  const [cargandoVotaciones, setCargandoVotaciones] = useState(false)
+  const [mostrarVotaciones, setMostrarVotaciones] = useState(false)
+
   // === TOOLTIP GLOBAL PARA ENTIDADES ===
   const [tooltipGlobal, setTooltipGlobal] = useState({ visible: false, x: 0, y: 0, title: '', desc: '', icon: '' })
 
@@ -591,6 +597,8 @@ function App() {
       setMostrarEntidades(false)
       setEstadisticas(null)
       setMostrarEstadisticas(false)
+      setVotaciones(null)
+      setMostrarVotaciones(false)
       return
     }
 
@@ -660,9 +668,31 @@ function App() {
       }
     }
 
+    const fetchVotaciones = async () => {
+      setCargandoVotaciones(true)
+      try {
+        const respuesta = await fetch(`${API_URL}/api/votaciones`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ video_id: sesionActiva.id_sesion })
+        })
+        if (respuesta.ok) {
+          const data = await respuesta.json()
+          if (isMounted && !data.error && data.votaciones) {
+            setVotaciones(data)
+          }
+        }
+      } catch (error) {
+        console.error("Error al obtener votaciones:", error)
+      } finally {
+        if (isMounted) setCargandoVotaciones(false)
+      }
+    }
+
     const cargarDatosSecuencialmente = async () => {
-      // 1. Estadísticas (pueden ir en paralelo)
+      // 1. Estadísticas y Votaciones (pueden ir en paralelo)
       fetchEstadisticas();
+      fetchVotaciones();
       
       // 2. Entidades PRIMERO (para que Neo4j se pueble)
       await fetchEntidades();
@@ -1126,6 +1156,12 @@ function App() {
                     </div>
                   ) : resumenGlobal ? (
                     <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => setMostrarVotaciones(true)}
+                        className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-colors bg-teal-50 text-teal-700 hover:bg-teal-100"
+                      >
+                        <Vote size={16} /> Votaciones
+                      </button>
                       <button
                         onClick={() => setMostrarEstadisticas(true)}
                         className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-colors bg-green-50 text-green-700 hover:bg-green-100"
@@ -1656,6 +1692,43 @@ function App() {
                   ) : (
                     <ErrorBoundary>
                       <DashboardEstadisticas data={estadisticas} />
+                    </ErrorBoundary>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL VOTACIONES */}
+          {mostrarVotaciones && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+              <div className="bg-[#1C1C1E] rounded-3xl w-full max-w-6xl h-[85vh] flex flex-col shadow-2xl overflow-hidden border border-white/10">
+                <div className="p-4 border-b border-white/10 flex justify-between items-center shrink-0">
+                  <div className="flex items-center gap-3 px-2">
+                    <div className="bg-white/10 p-2 rounded-xl text-white">
+                      <Vote size={24} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold text-white tracking-tight">Registro de Votaciones</h3>
+                      <p className="text-sm text-white/50">Resultados de las votaciones detectadas en la sesión</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setMostrarVotaciones(false)}
+                    className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/70"
+                  >
+                    <X size={24} />
+                  </button>
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  {cargandoVotaciones ? (
+                    <div className="flex flex-col items-center justify-center h-full text-white/50">
+                      <Loader2 className="animate-spin mb-4" size={32} />
+                      <p>Cargando votaciones...</p>
+                    </div>
+                  ) : (
+                    <ErrorBoundary>
+                      <DashboardVotaciones data={votaciones} />
                     </ErrorBoundary>
                   )}
                 </div>
