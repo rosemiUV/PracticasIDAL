@@ -40,6 +40,10 @@ _NUM_TOKEN = (
 
 
 def _token_a_entero(token: str) -> Optional[int]:
+
+    """Coge una palabra (como "quince" o "ninguno") o un número en texto ("15") 
+    y lo convierte a un número entero de Python (15, 0, etc.)."""
+
     if token is None:
         return None
     t = token.strip().lower()
@@ -72,6 +76,11 @@ _DISTANCIA_MAXIMA = 25
 
 
 def _extraer_metricas_de_segmento(segmento: str) -> dict[str, Optional[int]]:
+    """
+    Analiza un fragmento de texto para encontrar palabras clave de votación 
+    (emitidos, a favor, en contra, abstenciones) y las asocia con el número 
+    más cercano en el texto, evitando duplicados. Devuelve un diccionario con los resultados.
+    """
     eventos_kw_todos = []  
     for nombre, patron in _PAT_KEYWORD.items():
         for m in patron.finditer(segmento):
@@ -189,6 +198,11 @@ _MULETILLAS_INICIALES = re.compile(
 
 
 def _limpiar_objeto(objeto: str) -> str:
+    """
+    Limpia la frase del tema votado eliminando muletillas de la Mesa 
+    (ej. 'Vamos a votar ahora...', 'Pues la...') y signos de puntuación sobrantes, 
+    devolviendo el texto capitalizado.
+    """
     objeto = _limpiar_espacios(objeto)
     objeto = re.sub(
         r"^(?:" + "|".join(_DISPARADORES) + r")\s*", "", objeto, flags=re.IGNORECASE
@@ -223,6 +237,11 @@ _ORACIONES_DE_TRAMITE = re.compile(
 
 
 def _es_oracion_de_tramite(oracion: str) -> bool:
+    """
+    Verifica si una oración es solo una fórmula de protocolo (ej. 'Procedemos a la votación') 
+    sin contener información real sobre el tema que se va a votar.
+    """
+
     limpio = oracion.strip(" ¿?¡!.,;:")
     if not limpio:
         return True
@@ -230,6 +249,10 @@ def _es_oracion_de_tramite(oracion: str) -> bool:
 
 
 def _extraer_objeto_contextual(contexto: str) -> str:
+    """
+    Analiza el texto previo al anuncio de los resultados, descartando oraciones 
+    de puro trámite, para capturar la frase exacta que describe qué se está votando.
+    """
     contexto = contexto.strip()
     if not contexto:
         return ""
@@ -259,6 +282,10 @@ _REGEX_RESOLUCION = re.compile(
 
 
 def _extraer_resolucion(segmento: str) -> Optional[str]:
+    """
+    Busca en el texto palabras clave que indiquen el veredicto final de la votación 
+    (ej. 'queda aprobado', 'se rechaza', 'decae') y devuelve la resolución normalizada.
+    """
     m = _REGEX_RESOLUCION.search(segmento)
     return _limpiar_espacios(m.group(1)).lower() if m else None
 
@@ -286,6 +313,10 @@ class Votacion:
 
 
 def _validar_integridad(v: Votacion, tolerancia: int = 1) -> Optional[bool]:
+    """
+    Comprueba matemáticamente si la suma de votos (a favor + en contra + abstenciones) 
+    coincide con el total de votos emitidos anunciados, permitiendo un pequeño margen de error.
+    """
     valores = [v.a_favor, v.en_contra, v.abstenciones]
     if v.votos_emitidos is None or any(x is None for x in valores):
         return None
@@ -303,6 +334,11 @@ class _OffsetChunk:
 
 
 def _construir_buffer_mesa(chunks: list[dict]) -> tuple[str, list[_OffsetChunk]]:
+    """
+    Filtra solo las intervenciones de la 'Mesa', las une todas en un único bloque 
+    de texto largo (buffer) y guarda un índice (offsets) para saber a qué chunk 
+    original pertenece cada letra de ese texto largo.
+    """
     partes: list[str] = []
     offsets: list[_OffsetChunk] = []
     cursor = 0
@@ -331,6 +367,10 @@ def _construir_buffer_mesa(chunks: list[dict]) -> tuple[str, list[_OffsetChunk]]
 
 
 def _chunk_para_offset(offset: int, offsets: list[_OffsetChunk]) -> Optional[dict]:
+    """
+    Dada una posición (índice de carácter) en el texto largo (buffer), 
+    busca en los offsets y devuelve el chunk JSON original del que provino ese texto.
+    """
     if not offsets:
         return None
     puntos = [o.inicio_offset for o in offsets]
@@ -344,6 +384,11 @@ def _chunk_para_offset(offset: int, offsets: list[_OffsetChunk]) -> Optional[dic
 # ---------------------------------------------------------------------------
 
 def extraer_votaciones_de_video(chunks: list[dict]) -> list[Votacion]:
+    """
+    Recibe todos los chunks de un vídeo, construye el texto continuo de la Mesa, 
+    busca los disparadores de votación, extrae los resultados, el objeto y la resolución, 
+    y devuelve una lista de objetos 'Votacion' estructurados.
+    """
     resultados: list[Votacion] = []
 
     if not chunks:
@@ -454,6 +499,10 @@ def extraer_votaciones_de_video(chunks: list[dict]) -> list[Votacion]:
 # ---------------------------------------------------------------------------
 
 def procesar_archivo(ruta: Path) -> list[Votacion]:
+    """
+    Abre un archivo JSON específico, valida que su formato sea correcto (una lista de chunks) 
+    y lo pasa al motor de extracción de votaciones. Maneja los errores de lectura.
+    """
     try:
         with ruta.open(encoding="utf-8") as f:
             data = json.load(f)
@@ -482,6 +531,10 @@ def procesar_archivo(ruta: Path) -> list[Votacion]:
 
 
 def guardar_resultados(votaciones: list[Votacion], ruta_salida: Path) -> None:
+    """
+    Convierte la lista de objetos 'Votacion' a un formato de diccionario simplificado 
+    y los guarda en un archivo JSON final en la ruta especificada.
+    """
     datos_formateados = []
     
     for v in votaciones:
@@ -502,6 +555,10 @@ def guardar_resultados(votaciones: list[Votacion], ruta_salida: Path) -> None:
 
 
 def _buscar_carpeta_automaticamente(nombre_objetivo: str = "resultados_finales") -> Optional[Path]:
+    """
+    Funciones de rescate: si el programa no encuentra la carpeta indicada por el usuario, 
+    rastrean el directorio actual y sus subcarpetas buscando carpetas o archivos JSON válidos.
+    """
     raiz = Path.cwd()
     try:
         for candidata in raiz.rglob(nombre_objetivo):
@@ -512,6 +569,9 @@ def _buscar_carpeta_automaticamente(nombre_objetivo: str = "resultados_finales")
     return None
 
 def _buscar_jsons_automaticamente(raiz: Optional[Path] = None) -> list[Path]:
+    """
+    Funciones de rescate: misma función que la anterior pero para archivos JSON.
+    """
     raiz = raiz or Path.cwd()
     encontrados: list[Path] = []
     try:
@@ -535,6 +595,11 @@ def _buscar_jsons_automaticamente(raiz: Optional[Path] = None) -> list[Path]:
 
 
 def procesar_carpeta(carpeta: str | Path = "resultados_finales") -> list[Votacion]:
+    """
+    Busca todos los archivos JSON dentro de una carpeta, los procesa uno a uno, 
+    extrae sus votaciones, crea la ruta de destino (data/votaciones) y guarda 
+    un archivo de resultados por cada vídeo.
+    """
     carpeta = Path(carpeta)
     todas: list[Votacion] = []
     archivos: list[Path] = []
