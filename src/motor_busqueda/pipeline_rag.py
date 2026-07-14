@@ -245,10 +245,13 @@ def _llamar_mistral(system: str, messages: list[dict]) -> str:
 
 def _llamar_groq(system: str, messages: list[dict]) -> str:
     """
-    Llama a Llama-3 en la nube con Groq.
+    Llama a Llama en la nube con Groq.
     Se usa SOLO en extraer_entidades(), porque hace muchas llamadas seguidas
     y Groq tiene un limite gratuito mas generoso que Mistral (30 rpm vs 2 rpm).
     Requiere GROQ_API_KEY en el archivo .env
+
+    Modelo: meta-llama/llama-4-scout-17b-16e-instruct
+    → 30K tokens/minuto (5x más que llama-3.1-8b-instant) con mismo RPM y 500K/día
     """
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
@@ -258,7 +261,7 @@ def _llamar_groq(system: str, messages: list[dict]) -> str:
         )
     cliente = Groq(api_key=api_key)
     respuesta = cliente.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[{"role": "system", "content": system}] + messages,
         temperature=0.3
     )
@@ -854,7 +857,8 @@ def _detectar_entidades_con_llm(texto: str) -> dict:
         respuesta = _llamar_groq(system, [{"role": "user", "content": mensaje}])
         respuesta_limpia = respuesta.strip().strip("```json").strip("```").strip()
         return json.loads(respuesta_limpia)
-    except Exception:
+    except Exception as e:
+        print(f"[!] _detectar_entidades_con_llm falló: {type(e).__name__}: {e}")
         return {"leyes": [], "lugares": [], "instituciones": [], "partidos": [], "eventos": [], "conceptos": []}
 
 
@@ -1101,6 +1105,7 @@ def extraer_entidades(video_id: str, pregunta: str = "", top_k: int = 10) -> dic
             segmento = texto_completo[i:i+max_chars]
             try:
                 res_segmento = _detectar_entidades_con_llm(segmento)
+                print(f"[DEBUG LLM] Groq: leyes={res_segmento.get('leyes',[])} partidos={res_segmento.get('partidos',[])} lugares={res_segmento.get('lugares',[])} instituciones={res_segmento.get('instituciones',[])} eventos={res_segmento.get('eventos',[])} conceptos={res_segmento.get('conceptos',[])}")
                 for k in detectadas.keys():
                     if k in res_segmento:
                         # Los partidos son dicts ({"nombre":..., "alias":...}), el resto son strings
@@ -1123,6 +1128,7 @@ def extraer_entidades(video_id: str, pregunta: str = "", top_k: int = 10) -> dic
         partidos      = detectadas.get("partidos", [])
         eventos       = detectadas.get("eventos", [])
         conceptos     = detectadas.get("conceptos", [])
+        print(f"[DEBUG TOTAL] leyes={len(leyes)} lugares={len(lugares)} instituciones={len(instituciones)} partidos={len(partidos)} eventos={len(eventos)} conceptos={len(conceptos)}")
 
 
 
@@ -1249,6 +1255,9 @@ def extraer_entidades(video_id: str, pregunta: str = "", top_k: int = 10) -> dic
         return {"video_id": video_id, "entidades": entidades, "error": None}
 
     except Exception as e:
+        import traceback
+        print(f"[!] EXCEPCIÓN EN extraer_entidades: {type(e).__name__}: {e}")
+        print(traceback.format_exc())
         return {"video_id": video_id, "entidades": [], "error": str(e)}
 
 

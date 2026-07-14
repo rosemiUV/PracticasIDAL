@@ -204,11 +204,22 @@ def get_summary(request: SummaryRequest):
 def get_entities(request: EntitiesRequest):
     """
     Devuelve las entidades vinculadas al vídeo (Leyes, Personas, etc.) directamente desde Neo4j.
+    Si force_refresh=True, borra la caché de Neo4j y fuerza una re-extracción con el LLM.
     """
     from src.motor_busqueda.pipeline_rag import extraer_entidades
     from src.motor_busqueda.db_neo4j import db
     
     try:
+        # Si se pide refresco forzado, borrar las relaciones MENCIONA de este vídeo en Neo4j
+        if request.force_refresh:
+            print(f"[REFRESH] Borrando caché de entidades en Neo4j para {request.video_id}...")
+            db.execute_write(
+                "MATCH (v:Video {id: $video_id})-[r:MENCIONA]->() DELETE r",
+                {"video_id": request.video_id}
+            )
+            print(f"[REFRESH] Caché borrada. Forzando re-extracción con LLM...")
+            return extraer_entidades(request.video_id, request.pregunta or "", top_k=25)
+
         # 1. Intentar cargar entidades desde Neo4j
         if not request.pregunta:
             query = """

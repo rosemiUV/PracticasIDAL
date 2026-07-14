@@ -626,13 +626,13 @@ function App() {
       }
     }
 
-    const fetchEntidades = async () => {
+    const fetchEntidades = async (forceRefresh = false) => {
       setCargandoEntidades(true)
       try {
         const respuesta = await fetch(`${API_URL}/api/entities`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ video_id: sesionActiva.id_sesion })
+          body: JSON.stringify({ video_id: sesionActiva.id_sesion, force_refresh: forceRefresh })
         })
         if (respuesta.ok) {
           const data = await respuesta.json()
@@ -1479,12 +1479,39 @@ function App() {
                       Personas y normativas extraídas de la sesión actual
                     </p>
                   </div>
-                  <button
-                    onClick={() => setMostrarEntidades(false)}
-                    className="p-2 hover:bg-gray-200 rounded-full transition-colors"
-                  >
-                    <X size={24} className="text-gray-500" />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        // Forzar refresco: limpiar caché Neo4j y re-extraer con LLM
+                        const doRefresh = async () => {
+                          setCargandoEntidades(true)
+                          try {
+                            const respuesta = await fetch(`${API_URL}/api/entities`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ video_id: sesionActiva.id_sesion, force_refresh: true })
+                            })
+                            if (respuesta.ok) {
+                              const data = await respuesta.json()
+                              if (!data.error && data.entidades) setEntidades(data.entidades)
+                            }
+                          } catch (e) { console.error(e) }
+                          finally { setCargandoEntidades(false) }
+                        }
+                        doRefresh()
+                      }}
+                      title="Refrescar entidades (borra caché y re-analiza con IA)"
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-xs font-semibold transition-colors"
+                    >
+                      <Loader2 size={13} className={cargandoEntidades ? 'animate-spin' : ''} /> Refrescar
+                    </button>
+                    <button
+                      onClick={() => setMostrarEntidades(false)}
+                      className="p-2 hover:bg-gray-200 rounded-full transition-colors"
+                    >
+                      <X size={24} className="text-gray-500" />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="p-6 overflow-y-auto flex-1 bg-gray-50/30">

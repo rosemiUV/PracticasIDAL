@@ -47,6 +47,7 @@ class SummaryRequest(BaseModel):
 class EntitiesRequest(BaseModel):
     video_id: str
     pregunta: Optional[str] = None
+    force_refresh: bool = False
 
 class StatsRequest(BaseModel):
     video_id: str
