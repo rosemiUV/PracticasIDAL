@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 """
 extractor_votaciones.py
-Extracción robusta de votaciones parlamentarias.
-Guarda los resultados individualmente por video en BPI/data/
+Módulo de Extracción Automática de Votaciones Parlamentarias.
+
+Este script analiza los discursos transcritos de la Presidencia/Mesa del Congreso 
+para identificar de forma automática cuándo se produce una votación, qué tema se 
+está votando y cuáles son los resultados matemáticos exactos.
+
+Proceso de extracción:
+1. Reconstruye el discurso continuo de la Mesa ignorando los cortes del vídeo.
+2. Busca frases "disparadoras" (ej. "Vamos a votar").
+3. Analiza el contexto previo para extraer la frase exacta del tema que se vota.
+4. Identifica resultados numéricos y resoluciones (ej. "queda aprobado").
+5. Valida matemáticamente que los votos a favor, en contra y abstenciones cuadren.
+6. Exporta un archivo JSON por cada vídeo a la carpeta `data/votaciones/` 
+   para ser consumido directamente por el apartado de estadísticas del frontend.
 """
 
 from __future__ import annotations

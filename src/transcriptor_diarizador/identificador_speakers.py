@@ -1,190 +1,23 @@
 """
-identificador_speakers_v2_18.py
-Bloque de identificación de speakers para el pipeline "Buscador Plenario Inteligente".
+identificador_speakers.py
+Motor de identificación de oradores para el pipeline "Buscador Plenario Inteligente".
 
-Versión 2.18 — LLM-DICT nunca inventa sin candidatos reales:
+Este módulo se encarga de coger los fragmentos transcritos de un vídeo parlamentario 
+(donde los oradores solo tienen un ID acústico genérico como "SPEAKER_01") y descubrir 
+su nombre real y partido político. 
 
-  Si _candidatos_diccionario devuelve 0 candidatos, se omite la llamada a
-  Groq por completo para ese bloque — sin ni un nombre parecido al que
-  agarrarse, cualquier corrección que proponga el LLM es una alucinación
-  sobre texto corto o genérico, no una corrección real. Caso real
-  detectado: "Guada" (0 candidatos) se "corrigió" a "Guillermo Montón" |
-  PSOE, mezclando a una portavoz de Sumar con una compareciente de
-  Greenpeace sin relación alguna. Ahora se deja el nombre tal cual lo dejó
-  la heurística — incompleto es preferible a inventado.
-
-Versión 2.17 — LLM-DICT nunca toca roles externos (fix crítico):
-
-  BUG REAL DETECTADO Y CORREGIDO: al ampliar LLM-DICT en v2.16 para que
-  también revisara nombres con partido nulo, un efecto secundario grave
-  apareció en comisiones: el Defensor del Pueblo, correctamente
-  etiquetado por la heurística de comisiones como nombre="Ángel Babilano"
-  (deformación real de "Ángel Gabilondo") con partido="Defensor del
-  Pueblo", fue enviado a LLM-DICT (porque "Ángel Babilano" no está en el
-  diccionario de diputados, lógicamente). LLM-DICT lo "corrigió" contra
-  ese diccionario y encontró un diputado real del PP con nombre parecido,
-  "Ángel Ibáñez Hernando", sustituyendo una identificación correcta por
-  una completamente equivocada en 103 de 251 chunks (41%) de un vídeo
-  real de prueba.
-
-  FIX: nuevo conjunto ROLES_EXTERNOS_NO_TOCAR = {"Defensor del Pueblo",
-  "Gobierno", "Compareciente externo"}. Si el partido de un chunk ya es
-  uno de estos, LLM-DICT lo salta sin más, sea cual sea el aspecto del
-  nombre — esas personas no son diputados por definición y no deben
-  buscarse en ese diccionario. Verificado con una simulación exacta del
-  chunk real: con el fix, ya no entra en la cola de corrección.
-
-Versión 2.16 — Relleno gratuito de partido + LLM-DICT ampliado:
-
-  CAMBIO 1 — _rellenar_partido_desde_diccionario(): nueva función, se
-  ejecuta ANTES de tocar el LLM. Para cualquier chunk con nombre ya
-  resuelto pero partido nulo, mira si ese nombre exacto tiene partido
-  real anotado en NOMBRE_A_PARTIDO (v2.14) y lo usa directamente, sin
-  gastar ninguna llamada a Groq. Caso real detectado: Legarda Uriarte,
-  Ibáñez Hernando y Àgueda Micó Micó tenían nombre correcto pero partido
-  nulo porque la heurística nunca extrajo el partido del texto de Mesa —
-  el diccionario ya lo sabía.
-
-  CAMBIO 2 — verificar_nombres_fuera_diccionario_con_llm() (LLM-DICT)
-  ampliado en dos frentes: (a) ahora también considera chunks con
-  metodo_id "heuristica_cierre" y "fingerprint_retroactivo" (antes solo
-  miraba "heuristica"/"fingerprint"/"fingerprint_fusion" — por eso
-  nombres deformados resueltos por cierre retroactivo, como un caso real
-  detectado, nunca llegaban a LLM-DICT); (b) ahora también dispara
-  cuando el nombre YA es correcto pero el partido sigue sin resolver
-  tras el relleno gratuito del cambio 1 (antes solo disparaba para
-  nombres "fuera de diccionario", así que un nombre bien identificado
-  con partido nulo nunca se enviaba a ningún LLM).
-
-Versión 2.15 — Heurística inyectable (para soportar comisiones):
-
-  CAMBIO PRINCIPAL — identificar_video() acepta ahora un parámetro opcional
-  funcion_heuristica (por defecto detectar_patrones_heuristicos, el de
-  siempre — cero cambio de comportamiento para pleno). Esto permite que un
-  módulo aparte (identificador_comisiones.py) reutilice toda la
-  orquestación (fingerprint, fusión, LLM-DESC/DICT, guardado) sin duplicar
-  ese código, solo aportando su propia función de heurística para los
-  patrones de presentación distintos de las comisiones.
-
-Versión 2.14 — Partido del diccionario expuesto a LLM-DICT:
-
-  CAMBIO PRINCIPAL — NOMBRE_A_PARTIDO extrae, leyendo el propio código
-  fuente (los comentarios "# PNV", "# Senador", etc. junto a cada entrada
-  de ALIASES_NOMBRE_COMPLETO), un mapa nombre canónico -> partido para las
-  1703 entradas del diccionario (~1130 con partido real, ~570 senadores/
-  gobierno con solo el rol). La lista de candidatos que recibe LLM-DICT
-  ahora muestra "Nombre (Partido)" en vez de solo el nombre. Además, si la
-  Mesa no menciona el partido explícitamente, se usa como respaldo el
-  partido verificado del diccionario para el nombre ya resuelto (ignorando
-  "Senador"/"Gobierno", que no son partidos reales) antes de aceptar lo que
-  diga el LLM. Esto añade una segunda red de seguridad, independiente de la
-  extracción por palabra clave del texto de Mesa (v2.13): para los 3 casos
-  reales de esa versión donde faltaba el partido, el diccionario YA tenía
-  el dato correcto (Otero Gabirondo→EH Bildu, Rentería Lasanta→PNV, Rego
-  Candamil→Mixto).
-
-Versión 2.13 — Grounding de partido + muestreo de chunks con cierre incluido:
-
-  CAMBIO PRINCIPAL — Detectados con datos reales de producción: (1) el LLM
-  ignoraba a veces el partido que la propia Mesa decía explícitamente y
-  "anclaba" en el partido más frecuente del contexto (ej. asignó PSOE a un
-  diputado de PNV, uno de Bildu y uno del Grupo Mixto, los tres con el
-  partido correcto dicho literalmente por la Mesa). Ahora
-  _partido_desde_texto_mesa() extrae el partido por palabra clave del texto
-  de Mesa en código (no depende del LLM) y SOBREESCRIBE lo que diga el LLM
-  cuando hay mención explícita, en LLM-DESC y LLM-DICT. (2) indices[:4]
-  siempre cogía los primeros chunks del bloque, pero la autoidentificación
-  de partido a menudo está en el CIERRE del discurso (último chunk), que en
-  bloques de más de 4 chunks nunca se incluía. Ahora se cogen los 3
-  primeros + el último.
-
-Versión 2.12 — Fix de truncado en texto_speaker (LLM-DESC y LLM-DICT):
-
-  CAMBIO PRINCIPAL — texto_speaker se construía uniendo hasta 4 chunks y
-  cortando la CONCATENACIÓN a 600/500 caracteres. Si el primer chunk del
-  bloque ya superaba ese límite (caso real detectado: orador de Vox cuyo
-  primer chunk tenía 1038 caracteres), los chunks siguientes —incluida una
-  frase de autoidentificación de partido como "somos nosotros, Vox..."—
-  nunca llegaban al prompt. Ahora cada chunk se trunca por separado antes
-  de unirlos (400 car. en LLM-DESC, 300 en LLM-DICT), así el corte nunca se
-  come chunks completos posteriores del mismo bloque.
-
-Versión 2.11 — Few-shots + candidatos de diccionario para LLM-DICT:
-
-  CAMBIO PRINCIPAL — Ambos prompts (LLM-DESC y LLM-DICT) incluyen ahora 4
-  ejemplos few-shot con casos reales (incluido el fallo real de "Bellugera
-  Balañá" -> "Pilar Vallugera Balañà" que se detectó en producción), y uno
-  de anti-alucinación explícito para enseñar a devolver null cuando no hay
-  información suficiente. Además, LLM-DICT ya NO se apoya solo en el
-  conocimiento del modelo: antes de llamarlo, _candidatos_diccionario() hace
-  una búsqueda difusa local (difflib) contra los ~661 nombres canónicos del
-  diccionario y le pasa al LLM solo los 5-6 más parecidos textualmente al
-  nombre deformado, en vez del diccionario entero (inviable: ~11 500 tokens,
-  por encima del límite de 6 000 TPM del free tier de Groq).
-
-Versión 2.10 — Migrado de Gemini a Groq:
-
-  CAMBIO PRINCIPAL — LLM-DESC y LLM-DICT ya no llaman a Gemini, llaman a la
-  API de Groq (requiere `pip install groq` y la variable de entorno
-  GROQ_API_KEY). Modelo usado: llama-3.1-8b-instant, que en el free tier de
-  Groq permite el mayor número de llamadas diarias del catálogo Llama
-  (14 400 RPD / 30 RPM / 6 000 TPM), muy por encima de llama-3.3-70b-versatile
-  (1 000 RPD). La lógica de prompts, umbrales y actualización de fingerprints
-  no cambia — solo el proveedor del LLM (_llamar_groq reemplaza a
-  _llamar_gemini_nuevo).
-
-Versión 2.9 — Salida en consola para LLM-DESC/LLM-DICT:
-
-  CAMBIO PRINCIPAL — logging.basicConfig solo escribe al fichero de log, no
-  a la consola, así que las llamadas al LLM y sus resultados eran invisibles
-  en tiempo real. Ahora identificar_desconocidos_con_llm() y
-  verificar_nombres_fuera_diccionario_con_llm() imprimen en consola cada
-  llamada que hacen y si el resultado provoca un cambio (✓) o no (✗/⚠).
-
-Versión 2.8 — LLM-1 y LLM-2 eliminados por completo:
-
-  CAMBIO PRINCIPAL — Se retiran identificar_con_gemini() (LLM-1) y
-  verificar_heuristica_con_llm() (LLM-2). Ambas funciones llamaban a un
-  objeto `modelo` que nunca se definía (resto de la SDK antigua
-  google-generativeai, nunca migrado a la SDK nueva google-genai), por lo
-  que LLM-1 fallaba en cada llamada con NameError ("name 'modelo' is not
-  defined") y gastaba cuota de Gemini sin producir resultados. LLM-2 ya
-  estaba desactivado con `if False:`.
-  Ahora la única resolución por LLM ocurre después del bucle principal,
-  vía LLM-DESC (identificar_desconocidos_con_llm) y LLM-DICT
-  (verificar_nombres_fuera_diccionario_con_llm), que sí usan la SDK nueva
-  correctamente. Los chunks que antes intentaban LLM-1 en el bucle
-  principal ahora quedan DESCONOCIDO/AMBIGUO y los recoge LLM-DESC.
-
-Versión 2.7 — LLM-2 reducido sobre v2.6:
-
-  CAMBIO PRINCIPAL — Diccionario exhaustivo XV Legislatura.
-    Diccionario generado automáticamente desde datos oficiales:
-      350 diputados activos (Congreso XV Legislatura)
-      269 senadores activos (Senado XV Legislatura)
-      23 miembros del gobierno
-      + variantes Whisper y aliases críticos de versiones anteriores
-    Total: ~1700 entradas en ALIASES_NOMBRE_COMPLETO
-    Estrategia de aliases:
-      - ALIASES_NOMBRE_COMPLETO: nombre completo + apellidos compuestos
-        (siempre seguros, se buscan antes que apellido único)
-      - ALIASES_APELLIDO_UNICO: solo apellidos genuinamente únicos en
-        el Congreso actual (lista reducida y curada)
-    Con el diccionario ampliado, la mayoría de casos se resuelven en
-    el paso 1 de normalizar_nombre (nombre completo exacto) sin llegar
-    al alias de apellido único ni al LLM-2.
-
-  Nota sobre fusión cross-ID (Prioridad 2):
-    La fusión actual YA es general y correcta — agrupa todos los SPEAKER_IDs
-    con el mismo nombre canónico. El problema de Rocío de Meer (SPEAKER_03/04)
-    era falta de semilla, no fallo de fusión. El diccionario ampliado lo resuelve
-    dando más rutas de entrada al nombre correcto.
-
-  Conserva todos los cambios de v2.4/v2.3/v2.2/v2.1.
-
-Uso:
-    python identificador_speakers_v2_18.py ruta/al/chunks.json
-    python identificador_speakers_v2_18.py ruta/al/chunks.json --sin-llm
+Para lograr la máxima precisión, utiliza un sistema de 4 capas:
+1. Heurística (Reglas Clásicas): Analiza mediante Expresiones Regulares lo que dice 
+   la Presidencia/Mesa (ej. "Tiene la palabra el señor Rufián") o los cierres 
+   (ej. "Muchas gracias, señor Rufián").
+2. Diccionarios de Resolución: Contiene una base de datos interna exhaustiva de 
+   Diputados, Senadores y Gobierno. Permite corregir automáticamente los nombres que 
+   el sistema de transcripción (Whisper) haya escrito mal (deformaciones fonéticas).
+3. Fingerprinting y Fusión: Una vez que descubre quién es "SPEAKER_01" en el minuto 5, 
+   aplica esa identidad a todas las intervenciones de "SPEAKER_01" en el resto del vídeo.
+4. Inteligencia Artificial (LLMs): Si las reglas fallan, extrae el contexto de la Mesa 
+   y se lo envía a un LLM (Llama 3 vía Groq) para que deduzca quién está hablando o para 
+   que elija el mejor candidato posible de nuestro diccionario.
 """
 
 import re

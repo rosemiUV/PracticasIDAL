@@ -1,3 +1,21 @@
+"""
+procesador.py
+Módulo de Descarga y Procesamiento Acústico (IA).
+
+Este script se encarga del trabajo más intensivo a nivel computacional del proyecto. 
+Su misión es obtener el archivo multimedia y transformarlo en texto con marcas de 
+tiempo precisas y separación por oradores.
+
+Funciones principales:
+1. Configura el entorno local para usar FFmpeg sin depender de instalaciones globales.
+2. Descarga el audio de YouTube en la mejor calidad posible mediante yt-dlp.
+3. Ejecuta el pipeline pesado de IA:
+   - Transcribe el audio con WhisperX.
+   - Alinea el texto para saber en qué segundo exacto se dice cada palabra.
+   - Diariza el audio usando PyAnnote (detecta cuántas personas hablan y cuándo).
+   - Asigna a cada palabra transcrita su orador correspondiente.
+"""
+
 import os
 import subprocess
 from pathlib import Path
@@ -6,6 +24,12 @@ from dotenv import load_dotenv
 
 # --- INYECTAR FFMPEG (Windows) — NO TOCAR ---
 def inyectar_ffmpeg():
+    """
+    Inyecta la ruta de la carpeta local 'tools_transcripcion' (donde debe estar FFmpeg) 
+    en la variable de entorno PATH del sistema operativo y en los directorios de DLLs de Windows.
+    Esto asegura que librerías como Whisper o PyAnnote puedan encontrar FFmpeg sin necesidad 
+     de instalarlo globalmente en el sistema.
+    """
     ruta_script = Path(__file__).parent
     dir_tools = ruta_script / "tools_transcripcion"
     if str(dir_tools) not in os.environ.get("PATH", ""):
@@ -26,6 +50,11 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 
 
 def configurar_ffmpeg_local() -> str:
+    """
+    Verifica la existencia del directorio local de herramientas de transcripción, 
+    lo crea si es necesario, lo añade al PATH y devuelve la ruta absoluta en formato string 
+    para pasársela directamente a yt-dlp.
+    """
     ruta_script = Path(__file__).parent
     dir_tools = ruta_script / "tools_transcripcion"
     dir_tools.mkdir(parents=True, exist_ok=True)
@@ -35,6 +64,12 @@ def configurar_ffmpeg_local() -> str:
 
 
 def descargar_audio_youtube(url: str, directorio_salida: Path) -> Path:
+    """
+    Descarga el audio de un vídeo de YouTube usando yt-dlp y lo convierte a formato WAV.
+    Si detecta un archivo 'cookies.txt' en la raíz del proyecto, lo utiliza en la petición 
+    para evitar bloqueos por región, edad o exceso de peticiones por parte de YouTube.
+    Retorna la ruta del archivo de audio descargado.
+    """
     print(f"Descargando audio de: {url}")
     directorio_salida.mkdir(parents=True, exist_ok=True)
     archivo_salida = directorio_salida / "audio_prueba.wav"
@@ -70,8 +105,13 @@ def descargar_audio_youtube(url: str, directorio_salida: Path) -> Path:
 
 def transcribir_y_diarizar(ruta_audio: Path, idioma: str = "es") -> list:
     """
-    Transcribe con WhisperX y asigna speakers a nivel de palabra usando PyAnnote integrado.
-    Devuelve los segmentos de WhisperX, cada uno con campo 'speaker'.
+    Orquesta el pipeline completo de análisis de audio utilizando WhisperX:
+    1. Transcribe el audio completo usando el modelo 'large-v2'.
+    2. Alinea el texto para obtener el segundo exacto (timestamp) en el que se dice cada palabra.
+    3. Ejecuta la diarización con PyAnnote para identificar cuántas personas hablan y cuándo.
+    4. Cruza los datos (asignación) para etiquetar cada palabra con su orador correspondiente.
+    Gestiona la limpieza de memoria de la tarjeta gráfica tras cada paso y retorna los 
+    segmentos enriquecidos con la clave 'speaker'.
     """
     if not HF_TOKEN:
         raise ValueError("HF_TOKEN no encontrado en .env")

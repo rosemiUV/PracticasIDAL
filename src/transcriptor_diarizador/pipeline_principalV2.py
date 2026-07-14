@@ -1,3 +1,11 @@
+"""
+pipeline_principalV2.py
+Orquestador principal del sistema "Buscador Plenario Inteligente" (Pipeline de Ingesta).
+
+Este script actúa como el director de orquesta que coordina todas las fases del 
+procesamiento de un vídeo parlamentario, desde que se introduce la URL hasta que 
+los datos están listos para el chatbot.
+"""
 import json
 import warnings
 import hashlib
@@ -16,7 +24,12 @@ configurar_ffmpeg_local()
 
 
 def obtener_metadatos_youtube(url: str):
-    """Extrae título y fecha del vídeo usando yt-dlp."""
+    """
+    Extrae el título y la fecha de publicación de un vídeo de YouTube utilizando yt-dlp,
+    sin necesidad de descargar el archivo multimedia. Utiliza cookies locales si están 
+    disponibles para evitar bloqueos por parte de YouTube.
+    Devuelve el título y la fecha formateada (YYYY-MM-DD).
+    """
     try:
         import yt_dlp
         ydl_opts = {"quiet": True, "skip_download": True}
@@ -38,8 +51,18 @@ def obtener_metadatos_youtube(url: str):
 
 
 def ejecutar_pipeline_completo(url_video: str, callback_progreso=None):
-    """Función principal llamada desde FastAPI o desde __main__ con soporte para progreso."""
+    """
+    Orquesta el ciclo de vida completo de procesamiento de un único vídeo:
+    1. Descarga el audio.
+    2 y 3. Transcribe y diariza con WhisperX/PyAnnote.
+    4. Trocea el texto (Chunking) y asigna speakers (Fase 4b).
+    4c. Extrae automáticamente las votaciones detectadas.
+    5. Sube los fragmentos vectorizados a la base de datos ChromaDB.
+    6. Genera resúmenes globales y entidades utilizando LLMs.
 
+    Si el vídeo ya ha sido procesado previamente, optimiza el flujo saltando a la Fase 6.
+    Emite actualizaciones de estado en tiempo real a través de callback_progreso.
+    """
     video_id = "video_" + hashlib.sha1(url_video.encode("utf-8")).hexdigest()[:8]
     titulo_real, fecha_publicacion = obtener_metadatos_youtube(url_video)
 
@@ -228,7 +251,12 @@ def ejecutar_pipeline_completo(url_video: str, callback_progreso=None):
 
 
 def ejecutar_pipeline_lote(lista_urls: list, callback_progreso=None):
-    """Procesa una lista de URLs una a una con cortafuegos por vídeo."""
+    """
+    Procesa una lista de URLs de YouTube de forma secuencial, aplicando el pipeline completo
+    a cada una. Actúa como un gestor tolerante a fallos: si un vídeo falla, captura el error, 
+    lo registra y continúa con el siguiente sin detener la ejecución global.
+    Devuelve una tupla con los vídeos procesados exitosamente y los que fallaron.
+    """
     print(f"\nINICIANDO PROCESAMIENTO EN LOTE DE {len(lista_urls)} VÍDEOS")
 
     resultados_exitosos = []

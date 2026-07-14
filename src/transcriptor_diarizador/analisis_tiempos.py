@@ -1,3 +1,20 @@
+"""
+analisis_tiempos.py
+Módulo de Análisis Estadístico y Visualización de Tiempos de Intervención.
+
+Este script se encarga de calcular matemáticamente cuánto tiempo ha hablado 
+cada político y cada partido político durante la sesión, basándose en las 
+marcas de tiempo extraídas por el sistema de diarización.
+
+Sus objetivos principales son:
+1. Leer los fragmentos de texto y agregar (sumar) los tiempos de intervención.
+2. Calcular porcentajes absolutos (respecto a todo el pleno) y relativos 
+   (respecto al tiempo total del propio partido).
+3. Preparar las estructuras de datos (DataFrames) precisas que el frontend 
+   necesita para dibujar los gráficos de barras y de tarta.
+4. Proveer un visualizador local interactivo (Plotly).
+"""
+
 import json
 import pandas as pd
 from pathlib import Path
@@ -15,9 +32,15 @@ MAPA_COLORES = {
 
 def calcular_tiempos_dashboard(ruta_json: str | Path):
     """
-    Lee el JSON y prepara los datos para dos vistas:
-    1. df_final: Datos desglosados por ponente (Barras).
-    2. df_partido: Datos agregados por partido (Tarta).
+    Lee el archivo JSON procesado y realiza las agregaciones de tiempo.
+    
+    Agrupa los datos matemáticamente para generar dos tablas (DataFrames):
+    1. df_tarta: Suma total del tiempo de habla agrupado únicamente por partido político.
+    2. df_final (barras): Desglose detallado por ponente, calculando su porcentaje 
+       de tiempo tanto respecto al total del vídeo (porcentaje_global) como 
+       respecto al tiempo total de su propio partido (porcentaje_relativo).
+       
+    Retorna ambas estructuras formateadas y ordenadas listas para la API.
     """
     try:
         with open(ruta_json, 'r', encoding='utf-8') as f:
@@ -58,6 +81,19 @@ def calcular_tiempos_dashboard(ruta_json: str | Path):
     return df_final, df_partido
 
 def mostrar_dashboard_interactivo(df_barras: pd.DataFrame, df_tarta: pd.DataFrame):
+    """
+    Construye y renderiza un panel de gráficos interactivo en el navegador local 
+    utilizando la librería Plotly. 
+    
+    Diseña un menú desplegable (dropdown) que permite alternar entre:
+    - Vista Global: Gráfico de barras con todos los oradores.
+    - Vista Resumen: Gráfico de tarta con los tiempos totales por partido.
+    - Vistas Internas: Gráficos de barras filtrados por cada partido para ver el 
+      reparto interno de tiempos entre sus diputados.
+      
+    Nota: Esta función es de uso interno/depuración, el frontend usará los 
+    datos puros para dibujar sus propios gráficos en React.
+    """
     if df_barras is None or df_barras.empty:
         return
 

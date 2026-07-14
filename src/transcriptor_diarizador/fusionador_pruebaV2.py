@@ -1,3 +1,22 @@
+"""
+fusionador_pruebaV2.py
+Módulo de partición y estructuración de texto (Chunking) para RAG.
+
+Este script se encarga de coger la transcripción "bruta" generada por WhisperX 
+(que viene separada por frases y oradores) y transformarla en bloques de texto 
+perfectos (chunks) para que el buscador semántico pueda procesarlos.
+
+Sus objetivos principales son:
+1. Agrupar todo lo que dice una misma persona del tirón para no perder el contexto.
+2. Trocear los discursos muy largos en fragmentos más pequeños (ej. máximo 100 palabras) 
+   para no saturar la memoria del modelo de lenguaje (LLM).
+3. Garantizar de forma estricta que un mismo fragmento NUNCA mezcle lo que dicen dos 
+   personas distintas.
+4. Empaquetar cada fragmento con todos sus metadatos (enlace al minuto exacto 
+   del vídeo, nombre del orador, duración, etc.) y guardarlo en un JSON listo 
+   para subir a la base de datos vectorial (ChromaDB).
+"""
+
 import json
 from pathlib import Path
 

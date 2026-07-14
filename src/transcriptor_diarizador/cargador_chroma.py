@@ -1,3 +1,19 @@
+"""
+cargador_chroma.py
+Módulo de Gestión e Ingesta en la Base de Datos Vectorial.
+
+Este script se encarga de coger el archivo JSON final (que contiene todos los 
+fragmentos de texto, tiempos y nombres de oradores ya identificados) y subirlo 
+a ChromaDB. 
+
+Sus funciones principales son:
+1. Gestionar la conexión con la base de datos (tanto en local como en la nube).
+2. Actuar como "cortafuegos": verifica si un vídeo ya ha sido subido anteriormente 
+   para evitar procesos duplicados que gasten recursos y ensucien las búsquedas.
+3. Estructurar e insertar cada fragmento en la base de datos junto a todos sus 
+   metadatos (nombre, partido, URL al segundo exacto, etc.), dejándolos listos 
+   para las búsquedas semánticas del usuario.
+"""
 import json
 import chromadb
 from pathlib import Path
@@ -12,6 +28,10 @@ NOMBRE_COLECCION = "plenario"
 # =============================================================
 
 def cargar_json(ruta: Path) -> list:
+    """
+    Abre y lee el archivo JSON especificado, cargando todos los fragmentos (chunks) 
+    procesados en la memoria de Python para su posterior inserción.
+    """
     print(f"Leyendo JSON desde: {ruta}")
     with open(ruta, "r", encoding="utf-8") as f:
         datos = json.load(f)
@@ -19,6 +39,11 @@ def cargar_json(ruta: Path) -> list:
     return datos
 
 def conectar_chromadb():
+    """
+    Establece la conexión con la base de datos vectorial ChromaDB.
+    Dependiendo de la variable 'MODO_LOCAL', se conecta a una carpeta local o 
+    a un servidor en la nube (ej. Railway) para entornos de producción.
+    """
     if MODO_LOCAL:
         print("Conectando a ChromaDB local...")
         return chromadb.PersistentClient(path="./chroma_db_local")
@@ -31,13 +56,21 @@ def conectar_chromadb():
         )
 
 def obtener_coleccion(cliente: chromadb.Client):
+    """
+    Recupera la colección principal (tabla) donde se guardan los fragmentos. 
+    Si la colección no existe (por ejemplo, en la primera ejecución), la crea automáticamente.
+    """
     coleccion = cliente.get_or_create_collection(name=NOMBRE_COLECCION)
     print(f"Colección '{NOMBRE_COLECCION}' lista. Documentos actuales en total: {coleccion.count()}")
     return coleccion
 
 # --- NUEVA FUNCIÓN DE FILTRADO ---
 def video_ya_procesado(coleccion: chromadb.Collection, video_id: str) -> bool:
-    """Consulta a ChromaDB si existe al menos un chunk con este video_id"""
+    """
+    Actúa como sistema de seguridad (cortafuegos). Consulta a la base de datos si ya 
+    existe al menos un fragmento asociado a ese 'video_id'. Esto evita subir el mismo 
+    pleno dos veces si se vuelve a procesar por error.
+    """
     try:
         resultado = coleccion.get(
             where={"video_id": video_id},
@@ -50,6 +83,13 @@ def video_ya_procesado(coleccion: chromadb.Collection, video_id: str) -> bool:
         return False
 
 def insertar_fragmentos(coleccion, fragmentos: list) -> tuple[int, int]:
+    """
+    Recorre la lista de fragmentos y los inserta uno a uno en ChromaDB.
+    Asocia el texto principal del fragmento con una rica lista de metadatos 
+    (orador, partido, minuto y segundo, título, etc.) que permitirán filtrar 
+    y mostrar la información correctamente en el frontend.
+    Devuelve el número de fragmentos nuevos insertados y cuántos fueron ignorados por duplicados.
+    """
     insertados = 0
     saltados = 0
 
@@ -91,6 +131,12 @@ def insertar_fragmentos(coleccion, fragmentos: list) -> tuple[int, int]:
     return insertados, saltados
 
 def subir_datos_a_chroma(ruta_json: Path):
+    """
+    Función orquestadora principal que se llama desde el pipeline.
+    Carga el JSON, conecta a la base de datos, verifica que el vídeo no exista ya 
+    para no duplicar datos, y lanza el proceso masivo de inserción de fragmentos,
+    mostrando un resumen estadístico al finalizar.
+    """
     """Función principal para ser llamada desde el pipeline"""
     fragmentos = cargar_json(ruta_json)
     
